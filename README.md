@@ -76,6 +76,14 @@ canon:
 }
 ```
 
+## Coordinating agents on one task
+
+Shared memory makes cross-agent handoffs coherent; the file-mediated
+protocol for actually splitting work between two agents (headless
+invocation, task directories, mkdir locks, git worktrees) is documented in
+[docs/coordination.md](docs/coordination.md), including a verified
+Claude Code to Codex round trip.
+
 ## Notes
 
 - Memory files can contain private context. Keep the canon and anything
