@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-08-16
+
+### Added
+
+| Feature | Behaviour |
+| --- | --- |
+| Skill license metadata | Declares the bundled coordinator skill under MIT |
+| Codex interface metadata | Provides display text and a default invocation prompt |
+| Skill publication gate | Validates the Agent Skills package with GitHub CLI in CI |
+
 ## [1.3.0] - 2026-08-16
 
 ### Added

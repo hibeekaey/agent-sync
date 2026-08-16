@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coordinate Agents"
+  short_description: "Delegate and verify multi-agent coding work"
+  default_prompt: "Use $coordinate-agents to split this task safely across coding agents and verify every result."
