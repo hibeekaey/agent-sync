@@ -127,12 +127,21 @@ Claude Code to Codex round trip.
 
 The same protocol ships as an installable coordinator skill at
 [skills/coordinate-agents](skills/coordinate-agents/SKILL.md). Install it
-into whichever agent should play coordinator, for example:
+with [`gh skill`](https://github.com/github/gh-skill) into whichever agent
+should play coordinator:
 
 ```sh
-cp -R skills/coordinate-agents ~/.claude/skills/   # Claude Code
-cp -R skills/coordinate-agents ~/.codex/skills/    # Codex CLI
+gh skill install hibeekaey/agent-sync coordinate-agents \
+  --agent claude-code \
+  --scope user
+
+gh skill install hibeekaey/agent-sync coordinate-agents \
+  --agent codex \
+  --scope user
 ```
+
+To install a specific release, add `--pin <tag>`. Without `gh`, copying
+`skills/coordinate-agents/` into your agent's skills directory works too.
 
 ## Notes
 
