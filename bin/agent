@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -489,7 +489,9 @@ cmd_apply() {
   validate_manifest "$dir" "$manifest"
   updated=0
   while IFS="$TAB" read -r staged orig; do
-    [ -n "$staged" ] && [ -n "$orig" ] || continue
+    if [ -z "$staged" ] || [ -z "$orig" ]; then
+      continue
+    fi
     s="$dir/$staged"
     [ -f "$s" ] || continue
     if [ ! -f "$orig" ] || [ "$(sum "$s")" != "$(sum "$orig")" ]; then
