@@ -27,7 +27,7 @@ agent \- synchronize agent memory across AI coding agents
 .br
 \fBagent\fR gather [DIR]
 .br
-\fBagent\fR apply [DIR] [\-\-synthesizer MODE] [\-\-dry\-run]
+\fBagent\fR apply [DIR] [\-\-synthesizer MODE] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
 .br
 \fBagent\fR link [DIR] [\-\-import]
 .br
@@ -132,20 +132,25 @@ One MCP server registry for every tool.\& \fBsync\fR pushes each server via
 the tool'\&s own CLI (claude, codex, gemini, qwen, amp) or writes an
 agent\-sync\-owned dedicated config file (cursor, windsurf, kiro).\&
 Shared config files (zed, opencode, goose, continue) are never edited;
-\fBsnippet\fR prints what to paste.\&
+\fBsnippet\fR prints what to paste, including configured environment values
+and headers.\& Successfully applied CLI entries are tracked so updates can
+be validated and rolled back, and registry removals are propagated on the
+next sync.\& Entries installed before v1.\&5.\&2 may need one manual removal.\&
 .PP
 .RE
 \fBskills\fR sync
 .RS 4
-Mirror the canonical skills directory (default \(ti/.\&claude/skills,
-override with AGENT_SYNC_SKILLS_SOURCE) into every agent'\&s user\-scope
-skills directory, per the gh\-skill agent registry mapping.\&
+Additively synchronize the canonical skills directory (default
+\(ti/.\&claude/skills, override with AGENT_SYNC_SKILLS_SOURCE) into every
+agent'\&s user\-scope skills directory, per the gh\-skill agent registry
+mapping.\& Target\-only skills remain.\& Unmanaged same\-name collisions are
+left untouched and make the command exit nonzero.\&
 .PP
 .RE
 \fBhooks\fR [TOOL]
 .RS 4
 Print verified automation snippets that keep memory fresh: Claude Code
-SessionEnd, Codex Stop, Gemini SessionEnd, an OpenCode plugin, and a
+SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
 cron fallback.\& Printed, never installed.\&
 .PP
 .RE
@@ -167,6 +172,12 @@ Agent configuration root (default $HOME).\& Used by the test suite.\&
 Synthesis mode (auto, claude, codex, deterministic) or a custom
 command that reads a merge prompt on stdin and prints the merged
 document on stdout.\&
+.PP
+.RE
+\fBAGENT_SYNC_ONLY\fR, \fBAGENT_SYNC_SKIP\fR
+.RS 4
+Comma\-separated target filters used by sync, apply, status, diff, MCP sync
+and skills sync.\&
 .PP
 .RE
 .SH SEE ALSO

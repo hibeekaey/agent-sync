@@ -16,7 +16,7 @@ _agent() {
     'revert:restore .orig and .bak backups'
     'pack:shareable memory packs (add/list/update/remove)'
     'mcp:one MCP registry for every tool (add/list/remove/sync/snippet)'
-    'skills:mirror the canonical skills dir to every agent'
+    'skills:additively synchronize canonical skills to every agent'
     'hooks:print automation snippets'
     'help:show usage'
     'version:print the version'

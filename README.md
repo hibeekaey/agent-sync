@@ -48,12 +48,12 @@ flows back into the canon.
 | `agent doctor` | Diagnose the setup and report problems |
 | `agent migrate <agent>` | Fold just one agent's stores in, then redistribute |
 | `agent gather [dir]` | Stage all stores into a directory for editing and review |
-| `agent apply [dir] [--dry-run]` | Push edited staged files back to their stores, then run the full sync |
+| `agent apply [dir] [--synthesizer MODE] [--dry-run] [--only LIST] [--skip LIST]` | Push edited staged files back to their stores, then run the full sync |
 | `agent link [dir] [--import]` | Make one project-scope `AGENTS.md` readable by every agent in a repo; `--import` folds the repo's native per-tool configs into it |
 | `agent revert` | Restore `.orig` adoption backups and the synthesized file's `.bak` |
 | `agent pack add owner/repo[@ref][:dir]` | Shareable memory packs, pinned to a commit in a lockfile, folded in on every sync |
-| `agent mcp add/sync` | One MCP server registry pushed to every tool (CLI-driven for claude/codex/gemini/qwen/amp; owned config files for cursor/windsurf/kiro) |
-| `agent skills sync` | Mirror your canonical skills directory into every agent's user-scope skills directory |
+| `agent mcp add/remove/sync` | One MCP server registry pushed to every tool, with applied-state tracking for safe updates and removals |
+| `agent skills sync` | Additively synchronize canonical skills without overwriting unmanaged collisions |
 | `agent hooks [tool]` | Print verified automation snippets (Claude/Codex/Gemini hooks, an OpenCode plugin) |
 | `agent targets` | List targets and detection state |
 
@@ -69,6 +69,11 @@ synthesized file, and are redistributed to every agent.
 not write, the original is preserved beside it as `<file>.orig`, and `agent
 revert` restores everything. `apply` validates every manifest entry against
 the supported memory-store paths and rejects path traversal and symlinks.
+Pack subdirectories must resolve inside the downloaded repository. MCP files
+are written through private atomic temporary files, and CLI-managed MCP
+updates validate before replacement and restore the recorded configuration if
+replacement fails. Skill directories are replaced only after agent-sync has
+recorded ownership; an unmanaged same-name skill is reported and left alone.
 
 ## Install
 
@@ -93,7 +98,9 @@ make install                 # /usr/local (may need sudo)
 make install PREFIX=~/.local # per-user, no sudo
 ```
 
-POSIX sh only, no dependencies beyond coreutils. Works on macOS and Linux.
+POSIX sh only, using standard Unix utilities available on macOS and Linux.
+Memory packs require `curl` and `tar`; semantic synthesis requires a configured
+Claude Code or Codex CLI unless deterministic mode is selected.
 
 ## Supported agents
 
@@ -137,6 +144,10 @@ officially documented `@AGENTS.md` import stub, and configures Gemini CLI's
 
 `agent sync` automatically selects a semantic synthesizer. The same
 selection is used by the full sync at the end of `agent apply`.
+
+Automatic mode sends the synthesized memory document to the locally
+configured Claude Code account, then Codex if Claude is unavailable or fails.
+Use `--synthesizer deterministic` when the document must stay entirely local.
 
 | Selection | Behaviour |
 | --- | --- |
@@ -223,17 +234,25 @@ Beyond memory, `agent` syncs the rest of your agent setup:
   Windsurf `mcp_config.json`, Kiro `settings/mcp.json`), never touched if you
   created it yourself. Tools that keep MCP inside shared settings (Zed,
   OpenCode, Goose, Continue) get a printable snippet instead of risky edits.
+  CLI entries successfully applied by agent-sync are tracked so later updates
+  can validate and roll back, and removal from the registry is propagated on
+  the next sync. Entries first installed before v1.5.2 may require one manual
+  removal. MCP environment values and headers can be secrets: registry files
+  are private, and `agent mcp snippet` deliberately prints them for pasting.
   Every command grammar and file shape was verified against official docs.
-- **Skills** (`agent skills sync`): mirror `~/.claude/skills` (or
-  `AGENT_SYNC_SKILLS_SOURCE`) into every agent's user-scope skills directory,
-  following the `gh skill` agent registry mapping.
+- **Skills** (`agent skills sync`): additively synchronize `~/.claude/skills`
+  (or `AGENT_SYNC_SKILLS_SOURCE`) into every agent's user-scope skills
+  directory, following the `gh skill` agent registry mapping. Target-only
+  skills remain. Identical copies are adopted, agent-sync-owned copies update
+  atomically, and conflicting unmanaged copies are left untouched with a
+  nonzero exit.
 - **Memory packs** (`agent pack`): install shareable markdown packs from any
   GitHub repo, pinned to a commit in a lockfile, folded into the synthesized
   file on every sync and cleanly removable.
 - **Hooks** (`agent hooks`): verified snippets that keep memory fresh
-  automatically (Claude Code `SessionEnd`, Codex `Stop`, Gemini `SessionEnd`,
-  an OpenCode plugin), printed for you to paste, never installed behind your
-  back.
+  automatically (Claude Code `SessionEnd`, Codex `Stop`, Gemini `AfterAgent`,
+  an OpenCode plugin under `~/.config/opencode/plugin`), printed for you to
+  paste, never installed behind your back.
 
 ## Roadmap
 
@@ -246,7 +265,7 @@ Beyond memory, `agent` syncs the rest of your agent setup:
 
 | Item | Note |
 | --- | --- |
-| Privacy | Memory files can contain private context. Keep the synthesized file and gathered output out of public repositories. |
+| Privacy | Memory files and MCP credentials can contain private context. Keep the synthesized file, gathered output, MCP state and snippets out of public repositories; deterministic synthesis keeps memory out of model calls. |
 | Synthesized source | `AGENT_SYNC_SOURCE` overrides its location. When it lives elsewhere, sync redistributes it to Claude too. |
 | Test isolation | `AGENT_SYNC_HOME` points the tool at a fixture root; `make test` never touches your real config. |
 | Manual | `man agent` after `make install`, or `agent help`. |

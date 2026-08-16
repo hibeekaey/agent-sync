@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] - 2026-08-17
+
+### Fixed
+
+| Area | Resolution |
+| --- | --- |
+| Memory packs | Reject selected subdirectories whose physical path escapes the downloaded repository, including directory symlinks |
+| MCP file writes | Replace predictable temporary names with private adjacent `mktemp` files and atomically track ownership |
+| MCP CLI updates | Track successfully applied specs, validate changed specs before replacement, restore the previous spec on failure, propagate removals and return nonzero on any failure |
+| Apply options | Accept separated and equals forms of `--synthesizer`, `--only` and `--skip` before or after the gather directory |
+| Project imports | Escape agent-sync control markers in native project configuration before importing it |
+| Hook recipes | Use OpenCode's singular global `plugin` directory and Gemini's awaited `AfterAgent` event instead of best-effort `SessionEnd` |
+| Skills | Define additive synchronization, adopt identical copies, update only agent-sync-owned copies atomically and refuse unmanaged collisions |
+| Privacy | Document automatic model synthesis and MCP credential storage and output |
+| Workflows | Limit release write permission to the asset-building job while retaining approved major-version action tags |
+
+### Changed
+
+- `agent mcp remove NAME` is propagated to CLI-managed tools on the next
+  `agent mcp sync` when agent-sync recorded the applied entry.
+- `agent skills sync` preserves target-only skills by contract rather than
+  claiming an exact mirror.
+
 ## [1.5.1] - 2026-08-16
 
 ### Fixed

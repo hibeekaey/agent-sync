@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.5.1"
+VERSION="1.5.2"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -29,12 +29,18 @@ PACKS_DIR="$STATE_DIR/packs"
 PACKS_LOCK="$STATE_DIR/packs.lock"
 MCP_DIR="$STATE_DIR/mcp.d"
 MCP_OWNED="$STATE_DIR/mcp-owned"
+MCP_APPLIED_DIR="$STATE_DIR/mcp-applied"
+SKILLS_OWNED="$STATE_DIR/skills-owned"
 SKILLS_SOURCE="${AGENT_SYNC_SKILLS_SOURCE:-$AGENT_HOME/.claude/skills}"
 PRIVATE_TMP=""
 CANON_TMP=""
 APPLY_TMP=""
 MANIFEST_TMP=""
 TARGET_TMP=""
+MCP_TMP=""
+SKILL_TMP=""
+SKILL_BACKUP=""
+SKILL_STATE_TMP=""
 IMPORTED_COUNT=0
 SYNTHESIZER_REQUEST=""
 SYNTHESIZER_FROM_CLI=0
@@ -44,6 +50,10 @@ cleanup() {
   [ -z "$APPLY_TMP" ] || rm -f "$APPLY_TMP"
   [ -z "$MANIFEST_TMP" ] || rm -f "$MANIFEST_TMP"
   [ -z "$TARGET_TMP" ] || rm -f "$TARGET_TMP"
+  [ -z "$MCP_TMP" ] || rm -f "$MCP_TMP"
+  [ -z "$SKILL_TMP" ] || rm -rf "$SKILL_TMP"
+  [ -z "$SKILL_BACKUP" ] || rm -rf "$SKILL_BACKUP"
+  [ -z "$SKILL_STATE_TMP" ] || rm -f "$SKILL_STATE_TMP"
   [ -z "$PRIVATE_TMP" ] || rm -rf "$PRIVATE_TMP"
 }
 
@@ -92,9 +102,9 @@ Usage:
                          its own CLI (claude, codex, gemini, qwen, amp) or
                          an agent-sync-owned config file (cursor, windsurf,
                          kiro)
-  agent skills sync      mirror the canonical skills directory (default
-                         ~/.claude/skills) into every agent's user-scope
-                         skills directory
+  agent skills sync      additively synchronize the canonical skills directory
+                         (default ~/.claude/skills) into every agent's
+                         user-scope skills directory
   agent hooks [TOOL]     print verified automation snippets that keep memory
                          fresh (claude, codex, gemini, opencode)
   agent help             this text
@@ -415,6 +425,10 @@ parse_synthesizer_args() {
     esac
     shift
   done
+  validate_synthesizer_request
+}
+
+validate_synthesizer_request() {
   case "$SYNTHESIZER_REQUEST" in
     auto | claude | codex | deterministic) ;;
     *)
@@ -614,6 +628,10 @@ each_pack_name() {
 
 cmd_sync() {
   parse_synthesizer_args "$@"
+  sync_after_options
+}
+
+sync_after_options() {
   require_src
   require_selected_synthesizer
   for name in claude codex cursor continue windsurf goose; do
@@ -780,31 +798,53 @@ validate_manifest() {
 }
 
 cmd_apply() {
-  # The first bare (non --flag) argument is the gather directory, wherever
-  # it appears; every flag is handed to the shared option parser.
   dir="./agent-memories"
   found_dir=0
-  orig_count=$#
-  for a in "$@"; do
-    case "$a" in
+  SYNTHESIZER_REQUEST="${AGENT_SYNC_SYNTHESIZER:-auto}"
+  SYNTHESIZER_FROM_CLI=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --synthesizer | --only | --skip)
+        opt="$1"
+        if [ "$#" -lt 2 ]; then
+          echo "agent: $opt requires a value" >&2
+          return 2
+        fi
+        case "$opt" in
+          --synthesizer)
+            SYNTHESIZER_REQUEST="$2"
+            SYNTHESIZER_FROM_CLI=1
+            ;;
+          --only) TARGET_ONLY="$2" ;;
+          --skip) TARGET_SKIP="$2" ;;
+        esac
+        shift 2
+        ;;
+      --synthesizer=*)
+        SYNTHESIZER_REQUEST=${1#*=}
+        SYNTHESIZER_FROM_CLI=1
+        shift
+        ;;
+      --only=*) TARGET_ONLY=${1#*=}; shift ;;
+      --skip=*) TARGET_SKIP=${1#*=}; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
       --*)
-        set -- "$@" "$a"
+        echo "agent: unknown apply option: $1" >&2
+        return 2
         ;;
       *)
         if [ "$found_dir" -eq 0 ]; then
-          dir="$a"
+          dir="$1"
           found_dir=1
         else
-          echo "agent: unexpected apply argument: $a" >&2
+          echo "agent: unexpected apply argument: $1" >&2
           return 2
         fi
+        shift
         ;;
     esac
   done
-  while [ "$orig_count" -gt 0 ]; do
-    shift
-    orig_count=$((orig_count - 1))
-  done
+  validate_synthesizer_request
   manifest="$dir/.agent-manifest"
   if [ ! -f "$manifest" ]; then
     echo "agent: $dir is not a gather directory (missing .agent-manifest)" >&2
@@ -816,7 +856,6 @@ cmd_apply() {
     exit 1
   fi
   require_src
-  parse_synthesizer_args "$@"
   require_selected_synthesizer
   validate_manifest "$dir" "$manifest"
   updated=0
@@ -845,7 +884,7 @@ cmd_apply() {
     fi
   done <"$manifest"
   echo "$updated store file(s) updated from $dir"
-  cmd_sync "$@"
+  sync_after_options
 }
 
 # Show exactly what is stale, as unified diffs. Exits 1 when anything is
@@ -1036,7 +1075,7 @@ cmd_link() {
         echo
         echo "### ${f#"$dir"/}"
         echo
-        cat "$f"
+        neutralize_markers "$f"
         printf '\n'
       } >>"$content"
       found=$((found + 1))
@@ -1112,12 +1151,23 @@ cmd_pack() {
       curl -fsSL "https://codeload.github.com/$spec/tar.gz/$sha" -o "$PRIVATE_TMP/pack.tgz"
       mkdir -p "$PRIVATE_TMP/pack-x"
       tar -xzf "$PRIVATE_TMP/pack.tgz" -C "$PRIVATE_TMP/pack-x"
-      srcdir=$(find "$PRIVATE_TMP/pack-x" -mindepth 1 -maxdepth 1 -type d | head -1)
-      [ -n "$subdir" ] && srcdir="$srcdir/$subdir"
+      archive_root=$(find "$PRIVATE_TMP/pack-x" -mindepth 1 -maxdepth 1 -type d | head -1)
+      srcdir="$archive_root"
+      [ -n "$subdir" ] && srcdir="$archive_root/$subdir"
       if [ ! -d "$srcdir" ]; then
         echo "agent: subdir not found in pack: $subdir" >&2
         exit 1
       fi
+      root_phys=$(physical_path "$archive_root")
+      src_phys=$(physical_path "$srcdir")
+      case "$src_phys/" in
+        "$root_phys/" | "$root_phys"/*) ;;
+        *)
+          echo "agent: pack subdir escapes the downloaded repository: $subdir" >&2
+          exit 1
+          ;;
+      esac
+      srcdir="$src_phys"
       # Stage first: existing pack content and its lock entry survive a
       # fetch that yields nothing. Symlinked tarball entries are never
       # followed (they can point at arbitrary local files).
@@ -1280,17 +1330,15 @@ mcp_render_json() {
   fi
 }
 
-# Push one loaded spec to one CLI tool. Remove-then-add keeps it idempotent.
-mcp_push_cli() {
-  tool="$1"
-  name="$2"
-  case "$tool" in
+# Add or remove one loaded spec through a tool's supported CLI.
+mcp_add_cli() {
+  mca_tool="$1"
+  mca_name="$2"
+  case "$mca_tool" in
     claude)
-      claude mcp remove "$name" --scope user >/dev/null 2>&1 || true
-      claude mcp add-json "$name" "$(mcp_render_json claude)" --scope user >/dev/null
+      claude mcp add-json "$mca_name" "$(mcp_render_json claude)" --scope user >/dev/null
       ;;
     codex)
-      codex mcp remove "$name" >/dev/null 2>&1 || true
       if [ "$MCP_TYPE" = "stdio" ]; then
         set --
         while IFS= read -r e; do
@@ -1300,50 +1348,152 @@ mcp_push_cli() {
         while IFS= read -r a; do
           set -- "$@" "$a"
         done <"$PRIVATE_TMP/mcp-args"
-        codex mcp add "$name" "$@" >/dev/null
+        codex mcp add "$mca_name" "$@" >/dev/null
       else
         if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
-          echo "codex: note: the codex CLI takes no custom headers; header(s) omitted for $name" >&2
+          echo "codex: note: the codex CLI takes no custom headers; header(s) omitted for $mca_name" >&2
         fi
-        codex mcp add "$name" --url "$MCP_URL" >/dev/null
+        codex mcp add "$mca_name" --url "$MCP_URL" >/dev/null
       fi
       ;;
     gemini | qwen)
-      "$tool" mcp remove -s user "$name" >/dev/null 2>&1 || true
       if [ "$MCP_TYPE" = "stdio" ]; then
         set --
         while IFS= read -r e; do
           set -- "$@" -e "$e"
         done <"$PRIVATE_TMP/mcp-envs"
-        set -- "$@" "$name" "$MCP_CMD"
+        set -- "$@" "$mca_name" "$MCP_CMD"
         while IFS= read -r a; do
           set -- "$@" "$a"
         done <"$PRIVATE_TMP/mcp-args"
-        "$tool" mcp add -s user "$@" >/dev/null
+        "$mca_tool" mcp add -s user "$@" >/dev/null
       else
         set --
         while IFS= read -r h; do
           set -- "$@" --header "$h"
         done <"$PRIVATE_TMP/mcp-headers"
-        "$tool" mcp add -s user --transport http "$@" "$name" "$MCP_URL" >/dev/null
+        "$mca_tool" mcp add -s user --transport http "$@" "$mca_name" "$MCP_URL" >/dev/null
       fi
       ;;
     amp)
-      amp mcp remove "$name" >/dev/null 2>&1 || true
       if [ "$MCP_TYPE" = "stdio" ]; then
         set -- -- "$MCP_CMD"
         while IFS= read -r a; do
           set -- "$@" "$a"
         done <"$PRIVATE_TMP/mcp-args"
-        amp mcp add "$name" "$@" >/dev/null
+        amp mcp add "$mca_name" "$@" >/dev/null
       else
         if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
-          echo "amp: note: the amp CLI takes no custom headers; header(s) omitted for $name" >&2
+          echo "amp: note: the amp CLI takes no custom headers; header(s) omitted for $mca_name" >&2
         fi
-        amp mcp add "$name" "$MCP_URL" >/dev/null
+        amp mcp add "$mca_name" "$MCP_URL" >/dev/null
       fi
       ;;
   esac
+}
+
+mcp_remove_cli() {
+  mcr_tool="$1"
+  mcr_name="$2"
+  case "$mcr_tool" in
+    claude) claude mcp remove "$mcr_name" --scope user >/dev/null ;;
+    codex) codex mcp remove "$mcr_name" >/dev/null ;;
+    gemini | qwen) "$mcr_tool" mcp remove -s user "$mcr_name" >/dev/null ;;
+    amp) amp mcp remove "$mcr_name" >/dev/null ;;
+  esac
+}
+
+mcp_store_applied() {
+  mcs_tool="$1"
+  mcs_name="$2"
+  mcs_spec="$3"
+  mcs_dir="$MCP_APPLIED_DIR/$mcs_tool"
+  mkdir -p "$mcs_dir"
+  MCP_TMP=$(mktemp "$mcs_dir/.agent-sync-applied.XXXXXXXX") || return 1
+  cp "$mcs_spec" "$MCP_TMP"
+  mv "$MCP_TMP" "$mcs_dir/$mcs_name.spec"
+  MCP_TMP=""
+}
+
+# Agent-sync updates only entries recorded in its applied-state directory.
+# A changed spec is validated under a temporary name before the live entry is
+# replaced; if the final add fails, the previous recorded spec is restored.
+mcp_push_cli() {
+  mcp_tool="$1"
+  mcp_name="$2"
+  mcp_spec="$3"
+  mcp_applied="$MCP_APPLIED_DIR/$mcp_tool/$mcp_name.spec"
+  if [ -f "$mcp_applied" ] && cmp -s "$mcp_spec" "$mcp_applied"; then
+    return 0
+  fi
+  if [ ! -f "$mcp_applied" ]; then
+    mcp_load_spec "$mcp_spec"
+    mcp_add_cli "$mcp_tool" "$mcp_name" || return 1
+    mcp_store_applied "$mcp_tool" "$mcp_name" "$mcp_spec"
+    return
+  fi
+
+  mcp_probe="agent-sync-check-$mcp_name-$$"
+  mcp_remove_cli "$mcp_tool" "$mcp_probe" >/dev/null 2>&1 || true
+  mcp_load_spec "$mcp_spec"
+  if ! mcp_add_cli "$mcp_tool" "$mcp_probe"; then
+    mcp_remove_cli "$mcp_tool" "$mcp_probe" >/dev/null 2>&1 || true
+    return 1
+  fi
+  mcp_remove_cli "$mcp_tool" "$mcp_probe" >/dev/null 2>&1 || return 1
+
+  mcp_remove_cli "$mcp_tool" "$mcp_name" >/dev/null 2>&1 || true
+  mcp_load_spec "$mcp_spec"
+  if mcp_add_cli "$mcp_tool" "$mcp_name"; then
+    mcp_store_applied "$mcp_tool" "$mcp_name" "$mcp_spec"
+    return
+  fi
+
+  echo "$mcp_tool: restoring the previous $mcp_name configuration" >&2
+  mcp_load_spec "$mcp_applied"
+  if ! mcp_add_cli "$mcp_tool" "$mcp_name"; then
+    echo "$mcp_tool: rollback FAILED for $mcp_name" >&2
+  fi
+  return 1
+}
+
+mcp_remove_stale_for_tool() {
+  mrs_tool="$1"
+  mrs_failures=0
+  for mrs_applied in "$MCP_APPLIED_DIR/$mrs_tool"/*.spec; do
+    [ -f "$mrs_applied" ] || continue
+    mrs_name=$(basename "$mrs_applied" .spec)
+    [ -f "$MCP_DIR/$mrs_name.spec" ] && continue
+    if mcp_remove_cli "$mrs_tool" "$mrs_name"; then
+      rm -f "$mrs_applied"
+      echo "$mrs_tool: $mrs_name removed"
+    else
+      echo "$mrs_tool: $mrs_name removal FAILED" >&2
+      mrs_failures=$((mrs_failures + 1))
+    fi
+  done
+  [ "$mrs_failures" -eq 0 ]
+}
+
+mcp_record_owned_file() {
+  mro_dest="$1"
+  mkdir -p "$STATE_DIR"
+  if [ -L "$MCP_OWNED" ]; then
+    echo "mcp: refusing symbolic-link ownership file: $MCP_OWNED" >&2
+    return 1
+  fi
+  MCP_TMP=$(mktemp "$STATE_DIR/.agent-sync-mcp-owned.XXXXXXXX") || return 1
+  [ ! -f "$MCP_OWNED" ] || cat "$MCP_OWNED" >"$MCP_TMP"
+  grep -qxF "$mro_dest" "$MCP_TMP" 2>/dev/null || printf '%s\n' "$mro_dest" >>"$MCP_TMP"
+  mv "$MCP_TMP" "$MCP_OWNED"
+  MCP_TMP=""
+}
+
+mcp_require_safe_ownership_file() {
+  if [ -L "$MCP_OWNED" ]; then
+    echo "mcp: refusing symbolic-link ownership file: $MCP_OWNED" >&2
+    return 1
+  fi
 }
 
 # Rebuild one owned MCP config file wholesale from every registry entry.
@@ -1351,12 +1501,16 @@ mcp_push_cli() {
 mcp_write_owned_file() {
   style="$1"
   dest="$2"
+  mcp_require_safe_ownership_file || return 1
   if [ -f "$dest" ] && ! grep -qxF "$dest" "$MCP_OWNED" 2>/dev/null; then
     echo "mcp: $dest exists and is not agent-sync managed; add servers there yourself"
     return 0
   fi
   mkdir -p "$(dirname "$dest")"
-  tmp="$dest.tmp.agent-sync"
+  MCP_TMP=$(mktemp "$(dirname "$dest")/.agent-sync-mcp.XXXXXXXX") || {
+    echo "mcp: could not create a temporary file beside $dest" >&2
+    return 1
+  }
   {
     printf '{\n  "mcpServers": {\n'
     first=1
@@ -1373,11 +1527,10 @@ mcp_write_owned_file() {
       first=0
     done
     printf '\n  }\n}\n'
-  } >"$tmp"
-  mv "$tmp" "$dest"
-  mkdir -p "$STATE_DIR"
-  touch "$MCP_OWNED"
-  grep -qxF "$dest" "$MCP_OWNED" || printf '%s\n' "$dest" >>"$MCP_OWNED"
+  } >"$MCP_TMP"
+  mv "$MCP_TMP" "$dest"
+  MCP_TMP=""
+  mcp_record_owned_file "$dest"
   echo "mcp: wrote $dest"
 }
 
@@ -1457,11 +1610,17 @@ cmd_mcp() {
         echo "agent: mcp add needs either '-- COMMAND' or '--url URL'" >&2
         exit 2
       fi
+      MCP_TMP=$(mktemp "$MCP_DIR/.agent-sync-mcp-spec.XXXXXXXX") || {
+        echo "agent: could not create an MCP registry temporary file" >&2
+        exit 1
+      }
       {
         printf 'type=%s\n' "$mtype"
         [ -n "$murl" ] && printf 'url=%s\n' "$murl"
         cat "$tmp"
-      } >"$spec"
+      } >"$MCP_TMP"
+      mv "$MCP_TMP" "$spec"
+      MCP_TMP=""
       echo "mcp: registered $name ($mtype); run: agent mcp sync"
       ;;
     list)
@@ -1486,18 +1645,18 @@ cmd_mcp() {
       fi
       require_safe_name "$name"
       rm -f "$MCP_DIR/$name.spec"
-      echo "mcp: $name removed from the registry; next mcp sync rewrites owned files."
-      echo "CLI-managed tools keep it until you remove it there, for example:"
-      echo "  claude mcp remove $name --scope user; codex mcp remove $name"
+      echo "mcp: $name removed from the registry; next mcp sync removes agent-sync-managed copies."
+      echo "copies that predate applied-state tracking may need one manual removal"
       ;;
     sync)
+      mcp_require_safe_ownership_file || return 1
       found=0
+      mcp_failures=0
       for spec in "$MCP_DIR"/*.spec; do
         [ -f "$spec" ] && found=1
       done
       # CLI-managed tools: detected config dir + the CLI on PATH.
-      if [ "$found" -eq 1 ]; then
-        for tool in claude codex gemini qwen amp; do
+      for tool in claude codex gemini qwen amp; do
           case "$tool" in
             claude) tdir="$AGENT_HOME/.claude" ;;
             codex) tdir="$AGENT_HOME/.codex" ;;
@@ -1517,18 +1676,21 @@ cmd_mcp() {
             echo "$tool: skipped (CLI not on PATH)"
             continue
           fi
+          if ! mcp_remove_stale_for_tool "$tool"; then
+            mcp_failures=$((mcp_failures + 1))
+          fi
           for spec in "$MCP_DIR"/*.spec; do
             [ -f "$spec" ] || continue
             name=$(basename "$spec" .spec)
-            mcp_load_spec "$spec"
-            if mcp_push_cli "$tool" "$name"; then
+            if mcp_push_cli "$tool" "$name" "$spec"; then
               echo "$tool: $name configured"
             else
               echo "$tool: $name FAILED" >&2
+              mcp_failures=$((mcp_failures + 1))
             fi
           done
-        done
-      else
+      done
+      if [ "$found" -eq 0 ]; then
         echo "no MCP servers registered (agent mcp add NAME -- COMMAND)"
       fi
       # Dedicated-file tools: rewrite only files agent-sync owns. This runs
@@ -1545,6 +1707,7 @@ cmd_mcp() {
       fi
       echo "note: zed, opencode, goose and continue keep MCP in shared config files;"
       echo "agent-sync will not edit those. See: agent mcp snippet NAME"
+      [ "$mcp_failures" -eq 0 ] || return 1
       ;;
     snippet)
       name="${1:-}"
@@ -1637,7 +1800,7 @@ cmd_mcp() {
 }
 
 # ---------------------------------------------------------------------------
-# Skills propagation: mirror the canonical skills directory (default
+# Skills propagation: additively synchronize the canonical skills directory
 # ~/.claude/skills) into every agent's user-scope skills directory. The
 # mapping follows the gh skill agent registry (cli/cli
 # internal/skills/registry/registry.go) and each tool's official docs.
@@ -1656,6 +1819,66 @@ zed|$AGENT_HOME/.config/zed|$AGENT_HOME/.agents/skills
 EOF
 }
 
+skill_is_owned() {
+  grep -qxF "$1" "$SKILLS_OWNED" 2>/dev/null
+}
+
+skill_record_owned() {
+  sro_dest="$1"
+  mkdir -p "$STATE_DIR"
+  if [ -L "$SKILLS_OWNED" ]; then
+    echo "skills: refusing symbolic-link ownership file: $SKILLS_OWNED" >&2
+    return 1
+  fi
+  SKILL_STATE_TMP=$(mktemp "$STATE_DIR/.agent-sync-skills-owned.XXXXXXXX") || return 1
+  [ ! -f "$SKILLS_OWNED" ] || cat "$SKILLS_OWNED" >"$SKILL_STATE_TMP"
+  grep -qxF "$sro_dest" "$SKILL_STATE_TMP" 2>/dev/null || printf '%s\n' "$sro_dest" >>"$SKILL_STATE_TMP"
+  mv "$SKILL_STATE_TMP" "$SKILLS_OWNED"
+  SKILL_STATE_TMP=""
+}
+
+skill_sync_one() {
+  sso_source="$1"
+  sso_dest="$2"
+  sso_parent=$(dirname "$sso_dest")
+  mkdir -p "$sso_parent"
+
+  if [ -e "$sso_dest" ] || [ -L "$sso_dest" ]; then
+    if ! skill_is_owned "$sso_dest"; then
+      if [ -d "$sso_dest" ] && ! [ -L "$sso_dest" ] &&
+        diff -qr "$sso_source" "$sso_dest" >/dev/null 2>&1; then
+        skill_record_owned "$sso_dest"
+        return
+      fi
+      echo "skills: collision at $sso_dest; left the existing skill untouched" >&2
+      return 1
+    fi
+  fi
+
+  SKILL_TMP=$(mktemp -d "$sso_parent/.agent-sync-skill.XXXXXXXX") || return 1
+  cp -R "$sso_source/." "$SKILL_TMP/"
+  if [ ! -e "$sso_dest" ] && [ ! -L "$sso_dest" ]; then
+    mv "$SKILL_TMP" "$sso_dest"
+    SKILL_TMP=""
+    skill_record_owned "$sso_dest"
+    return
+  fi
+
+  SKILL_BACKUP=$(mktemp -d "$sso_parent/.agent-sync-skill-backup.XXXXXXXX") || return 1
+  rmdir "$SKILL_BACKUP"
+  mv "$sso_dest" "$SKILL_BACKUP"
+  if mv "$SKILL_TMP" "$sso_dest"; then
+    SKILL_TMP=""
+    rm -rf "$SKILL_BACKUP"
+    SKILL_BACKUP=""
+    skill_record_owned "$sso_dest"
+    return
+  fi
+  mv "$SKILL_BACKUP" "$sso_dest"
+  SKILL_BACKUP=""
+  return 1
+}
+
 cmd_skills() {
   sub="${1:-sync}"
   case "$sub" in
@@ -1670,9 +1893,19 @@ cmd_skills() {
     echo "set AGENT_SYNC_SKILLS_SOURCE to your canonical skills directory" >&2
     exit 1
   fi
+  if [ -L "$SKILLS_OWNED" ]; then
+    echo "skills: refusing symbolic-link ownership file: $SKILLS_OWNED" >&2
+    exit 1
+  fi
   count=0
   for skill in "$SKILLS_SOURCE"/*/; do
     [ -f "$skill/SKILL.md" ] || continue
+    skill_path=${skill%/}
+    if [ -L "$skill_path" ] || [ -L "$skill/SKILL.md" ] ||
+      [ -n "$(find "$skill_path" -type l -print -quit)" ]; then
+      echo "skills: refusing symbolic links in source skill: $skill_path" >&2
+      exit 1
+    fi
     count=$((count + 1))
   done
   if [ "$count" -eq 0 ]; then
@@ -1684,6 +1917,7 @@ cmd_skills() {
     echo "agent: could not resolve the skills source path" >&2
     exit 1
   fi
+  skill_failures=0
   while IFS='|' read -r name dir dest; do
     if ! target_selected "$name"; then
       echo "$name: skipped (filtered)"
@@ -1711,15 +1945,18 @@ cmd_skills() {
     for skill in "$SKILLS_SOURCE"/*/; do
       [ -f "$skill/SKILL.md" ] || continue
       sname=$(basename "$skill")
-      rm -rf "${dest_phys:?}/$sname"
-      cp -R "$skill" "$dest_phys/$sname"
-      synced=$((synced + 1))
+      if skill_sync_one "$skill" "${dest_phys:?}/$sname"; then
+        synced=$((synced + 1))
+      else
+        skill_failures=$((skill_failures + 1))
+      fi
     done
     echo "$name: $synced skill(s) -> $dest"
   done <<EOF
 $(skills_targets)
 EOF
   echo "source: $SKILLS_SOURCE ($count skill(s))"
+  [ "$skill_failures" -eq 0 ] || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1734,7 +1971,7 @@ cmd_hooks() {
 {
   "hooks": {
     "SessionEnd": [
-      { "hooks": [ { "type": "command", "command": "agent sync --synthesizer deterministic" } ] }
+      { "hooks": [ { "type": "command", "command": "agent sync --synthesizer deterministic >&2" } ] }
     ]
   }
 }
@@ -1750,7 +1987,7 @@ EOF
 {
   "hooks": {
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "agent sync --synthesizer deterministic", "timeout": 30 } ] }
+      { "hooks": [ { "type": "command", "command": "agent sync --synthesizer deterministic >&2 && printf '{\"continue\":true}\\n'", "timeout": 30 } ] }
     ]
   }
 }
@@ -1761,11 +1998,12 @@ EOF
     gemini | all)
       cat <<'EOF'
 
-# Gemini CLI (~/.gemini/settings.json): sync when the session ends
+# Gemini CLI (~/.gemini/settings.json): sync after each completed agent turn
+# (SessionEnd is best-effort and does not wait for hooks to finish.)
 {
   "hooks": {
-    "SessionEnd": [
-      { "hooks": [ { "name": "AgentSync", "type": "command", "command": "agent sync --synthesizer deterministic" } ] }
+    "AfterAgent": [
+      { "matcher": "*", "hooks": [ { "name": "AgentSync", "type": "command", "command": "agent sync --synthesizer deterministic >&2 && printf '{}\\n'" } ] }
     ]
   }
 }
@@ -1776,7 +2014,7 @@ EOF
     opencode | all)
       cat <<'EOF'
 
-# OpenCode (~/.config/opencode/plugins/agent-sync.js): sync when idle
+# OpenCode (~/.config/opencode/plugin/agent-sync.js): sync when idle
 export const AgentSyncPlugin = async ({ $ }) => ({
   event: async ({ event }) => {
     if (event.type === "session.idle") {
