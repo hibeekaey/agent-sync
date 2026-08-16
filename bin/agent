@@ -1,0 +1,286 @@
+#!/bin/sh
+# agent: synchronize your AI coding agents' memory so you can stop in one
+# agent and pick up in another. POSIX sh only, works on macOS and Linux.
+#
+# Model: one canonical memory file (default: ~/.claude/CLAUDE.md) is the
+# interchange format, because a markdown steering file is the one memory
+# surface every agent can read. `sync` distributes the canon to every
+# installed agent; `migrate` imports an agent's own memory stores into the
+# canon (then syncs) so every other agent picks them up; `gather` stages all
+# stores for a manual consolidation pass.
+set -eu
+
+VERSION="1.0.0"
+SRC="${AGENT_SYNC_SOURCE:-$HOME/.claude/CLAUDE.md}"
+
+usage() {
+  cat <<EOF
+agent v$VERSION: synchronize agent memory across AI coding agents
+
+Usage:
+  agent sync             distribute the canonical memory file to every
+                         installed agent
+  agent status           per-agent parity check (exit 1 if anything is stale)
+  agent targets          list sync targets and whether each tool is installed
+  agent migrate AGENT    import AGENT's own memory stores into the canonical
+                         file (under managed markers), then sync, so every
+                         other agent picks the memories up
+  agent gather [DIR]     stage every agent's memory stores into DIR
+                         (default: ./agent-memories) for manual consolidation
+  agent help             this text
+
+Agents with readable memory stores: claude, codex, cursor, continue, windsurf.
+
+Canonical file: $SRC
+Override it with AGENT_SYNC_SOURCE. Tools are detected by their config
+directory; absent tools are skipped, so one binary serves every machine.
+EOF
+}
+
+# name|detect dir|destination|mode
+targets() {
+  cat <<EOF
+codex|$HOME/.codex|$HOME/.codex/AGENTS.md|copy
+gemini|$HOME/.gemini|$HOME/.gemini/GEMINI.md|copy
+qwen|$HOME/.qwen|$HOME/.qwen/QWEN.md|copy
+continue|$HOME/.continue|$HOME/.continue/rules/best-practices.md|copy
+windsurf|$HOME/.codeium|$HOME/.codeium/windsurf/memories/global_rules.md|copy
+cursor|$HOME/.cursor|$HOME/.cursor/rules/best-practices.mdc|cursor
+EOF
+}
+
+# Cursor rules need .mdc frontmatter around the same body.
+cursor_render() {
+  printf -- '---\ndescription: Global agent memory managed by agent-sync (edit the canonical file, then run: agent sync)\nalwaysApply: true\n---\n\n'
+  cat "$SRC"
+}
+
+sum() {
+  cksum <"$1" | awk '{print $1 ":" $2}'
+}
+
+require_src() {
+  if [ ! -f "$SRC" ]; then
+    echo "agent: canonical file not found: $SRC" >&2
+    echo "create it (or point AGENT_SYNC_SOURCE at yours), then re-run" >&2
+    exit 1
+  fi
+}
+
+# Emit the memory-store file paths an agent owns. Files agent-sync itself
+# generates are excluded: they are copies of the canon, not agent memory.
+sources_for() {
+  case "$1" in
+    claude)
+      for f in "$HOME"/.claude/projects/*/memory/*.md; do
+        [ -f "$f" ] && echo "$f"
+      done
+      ;;
+    codex)
+      for f in "$HOME"/.codex/memories/*.md; do
+        [ -f "$f" ] && echo "$f"
+      done
+      ;;
+    cursor)
+      for f in "$HOME"/.cursor/rules/*.mdc "$HOME"/.cursor/rules/*.md; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in best-practices.mdc | best-practices.md) continue ;; esac
+        echo "$f"
+      done
+      ;;
+    continue)
+      for f in "$HOME"/.continue/rules/*.md; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in best-practices.md) continue ;; esac
+        echo "$f"
+      done
+      ;;
+    windsurf)
+      for f in "$HOME"/.codeium/windsurf/memories/*.md; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in global_rules.md) continue ;; esac
+        echo "$f"
+      done
+      ;;
+    *)
+      echo "agent: unknown agent: $1 (try: claude, codex, cursor, continue, windsurf)" >&2
+      return 2
+      ;;
+  esac
+}
+
+cmd_sync() {
+  require_src
+  while IFS='|' read -r name dir dest mode; do
+    if [ ! -d "$dir" ]; then
+      echo "$name: skipped (not installed)"
+      continue
+    fi
+    mkdir -p "$(dirname "$dest")"
+    case "$mode" in
+      copy) cp "$SRC" "$dest" ;;
+      cursor)
+        tmp="$dest.tmp.$$"
+        cursor_render >"$tmp" && mv "$tmp" "$dest"
+        ;;
+    esac
+    echo "$name: synced -> $dest"
+  done <<EOF
+$(targets)
+EOF
+}
+
+cmd_status() {
+  require_src
+  fails=0
+  src_sum=$(sum "$SRC")
+  while IFS='|' read -r name dir dest mode; do
+    if [ ! -d "$dir" ]; then
+      echo "$name: not installed"
+      continue
+    fi
+    if [ ! -f "$dest" ]; then
+      echo "$name: STALE (missing $dest)"
+      fails=$((fails + 1))
+      continue
+    fi
+    case "$mode" in
+      copy) want="$src_sum" ;;
+      cursor)
+        tmp="${TMPDIR:-/tmp}/agent-cursor-expected.$$"
+        cursor_render >"$tmp"
+        want=$(sum "$tmp")
+        rm -f "$tmp"
+        ;;
+    esac
+    if [ "$(sum "$dest")" = "$want" ]; then
+      echo "$name: synced"
+    else
+      echo "$name: STALE"
+      fails=$((fails + 1))
+    fi
+  done <<EOF
+$(targets)
+EOF
+  [ "$fails" -eq 0 ] || {
+    echo "$fails target(s) stale; run: agent sync"
+    exit 1
+  }
+}
+
+cmd_targets() {
+  while IFS='|' read -r name dir dest mode; do
+    if [ -d "$dir" ]; then
+      echo "$name: installed ($dest)"
+    else
+      echo "$name: not installed (would be $dest)"
+    fi
+  done <<EOF
+$(targets)
+EOF
+}
+
+# Replace (or append) the marker-delimited import section for one agent
+# inside the canonical file. Re-running a migrate refreshes its section
+# instead of duplicating it.
+import_into_canon() {
+  from="$1"
+  content="$2"
+  begin="<!-- agent-sync:begin imported:$from -->"
+  end="<!-- agent-sync:end imported:$from -->"
+  tmp="$SRC.tmp.$$"
+  if grep -qF "$begin" "$SRC"; then
+    awk -v b="$begin" -v e="$end" -v f="$content" '
+      $0 == b { print; while ((getline line < f) > 0) print line; skip = 1; next }
+      $0 == e { skip = 0; print; next }
+      !skip { print }
+    ' "$SRC" >"$tmp"
+  else
+    {
+      cat "$SRC"
+      printf '\n%s\n' "$begin"
+      cat "$content"
+      printf '%s\n' "$end"
+    } >"$tmp"
+  fi
+  mv "$tmp" "$SRC"
+}
+
+cmd_migrate() {
+  from="${1:-}"
+  if [ -z "$from" ]; then
+    echo "usage: agent migrate <claude|codex|cursor|continue|windsurf>" >&2
+    exit 2
+  fi
+  require_src
+  content="${TMPDIR:-/tmp}/agent-migrate.$$"
+  {
+    echo "## Memories imported from $from ($(date +%Y-%m-%d))"
+    echo
+    echo "Raw import; ask your agent to consolidate the durable parts into"
+    echo "the sections above and prune this block."
+  } >"$content"
+  list="${TMPDIR:-/tmp}/agent-migrate-list.$$"
+  sources_for "$from" >"$list"
+  found=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    {
+      echo
+      echo "### $f"
+      echo
+      cat "$f"
+    } >>"$content"
+    found=$((found + 1))
+  done <"$list"
+  rm -f "$list"
+  if [ "$found" -eq 0 ]; then
+    rm -f "$content"
+    echo "agent: no readable memory stores found for $from" >&2
+    exit 1
+  fi
+  import_into_canon "$from" "$content"
+  rm -f "$content"
+  echo "imported $found file(s) from $from into $SRC"
+  cmd_sync
+}
+
+cmd_gather() {
+  dest="${1:-./agent-memories}"
+  mkdir -p "$dest"
+  gathered=0
+  list="${TMPDIR:-/tmp}/agent-gather-list.$$"
+  for name in claude codex cursor continue windsurf; do
+    sources_for "$name" >"$list"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      cp "$f" "$dest/${name}__$(basename "$(dirname "$f")")__$(basename "$f")"
+      gathered=$((gathered + 1))
+    done <"$list"
+  done
+  rm -f "$list"
+  echo "gathered $gathered memory file(s) into $dest"
+  echo "next: consolidate the durable parts into $SRC, then run: agent sync"
+  echo "note: gathered files can contain private context; do not commit them"
+}
+
+case "${1:-help}" in
+  sync) cmd_sync ;;
+  status) cmd_status ;;
+  targets) cmd_targets ;;
+  migrate)
+    shift
+    cmd_migrate "$@"
+    ;;
+  gather)
+    shift
+    cmd_gather "$@"
+    ;;
+  version | --version | -v) echo "agent v$VERSION" ;;
+  help | --help | -h) usage ;;
+  *)
+    echo "agent: unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
