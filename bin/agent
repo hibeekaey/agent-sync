@@ -2,15 +2,20 @@
 # agent: synchronize your AI coding agents' memory so you can stop in one
 # agent and pick up in another. POSIX sh only, works on macOS and Linux.
 #
-# Model: one canonical memory file (default: ~/.claude/CLAUDE.md) is the
-# interchange format, because a markdown steering file is the one memory
-# surface every agent can read. `sync` distributes the canon to every
-# installed agent; `migrate` imports an agent's own memory stores into the
-# canon (then syncs) so every other agent picks them up; `gather` stages all
-# stores for a manual consolidation pass.
+# Model: `sync` is a round trip. It GATHERS every agent's own memory stores,
+# folds them into the synthesized memory file (default: ~/.claude/CLAUDE.md)
+# under managed markers, optionally runs a SYNTHESIZER over the result for a
+# semantic merge, then REDISTRIBUTES the file to every installed agent's
+# global instructions slot. Parity means every agent knows what every agent
+# has learned.
 set -eu
 
-VERSION="1.0.0"
+# A synthesizer-spawned agent must never re-enter agent-sync.
+if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
+  exit 0
+fi
+
+VERSION="1.1.0"
 SRC="${AGENT_SYNC_SOURCE:-$HOME/.claude/CLAUDE.md}"
 
 usage() {
@@ -18,22 +23,28 @@ usage() {
 agent v$VERSION: synchronize agent memory across AI coding agents
 
 Usage:
-  agent sync             distribute the canonical memory file to every
-                         installed agent
+  agent sync             gather every agent's memory stores, fold them into
+                         the synthesized memory file, and redistribute it to
+                         all installed agents
   agent status           per-agent parity check (exit 1 if anything is stale)
   agent targets          list sync targets and whether each tool is installed
-  agent migrate AGENT    import AGENT's own memory stores into the canonical
-                         file (under managed markers), then sync, so every
-                         other agent picks the memories up
+  agent migrate AGENT    fold just one agent's memory stores in, then
+                         redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
-                         (default: ./agent-memories) for manual consolidation
+                         (default: ./agent-memories) for manual review
   agent help             this text
 
 Agents with readable memory stores: claude, codex, cursor, continue, windsurf.
 
-Canonical file: $SRC
-Override it with AGENT_SYNC_SOURCE. Tools are detected by their config
-directory; absent tools are skipped, so one binary serves every machine.
+Synthesized memory file: $SRC (override with AGENT_SYNC_SOURCE)
+Semantic merging: set AGENT_SYNC_SYNTHESIZER to a command that reads a merge
+prompt on stdin and prints the merged document on stdout, for example:
+  AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
+Without it, sync does a mechanical merge: each agent's memories land in a
+marker-delimited section that refreshes in place on every run.
+
+Tools are detected by their config directory; absent tools are skipped, so
+one binary serves every machine.
 EOF
 }
 
@@ -51,7 +62,7 @@ EOF
 
 # Cursor rules need .mdc frontmatter around the same body.
 cursor_render() {
-  printf -- '---\ndescription: Global agent memory managed by agent-sync (edit the canonical file, then run: agent sync)\nalwaysApply: true\n---\n\n'
+  printf -- '---\ndescription: Global agent memory managed by agent-sync (run: agent sync)\nalwaysApply: true\n---\n\n'
   cat "$SRC"
 }
 
@@ -61,19 +72,22 @@ sum() {
 
 require_src() {
   if [ ! -f "$SRC" ]; then
-    echo "agent: canonical file not found: $SRC" >&2
+    echo "agent: synthesized memory file not found: $SRC" >&2
     echo "create it (or point AGENT_SYNC_SOURCE at yours), then re-run" >&2
     exit 1
   fi
 }
 
 # Emit the memory-store file paths an agent owns. Files agent-sync itself
-# generates are excluded: they are copies of the canon, not agent memory.
+# generates are excluded (they are copies of the synthesized file), as are
+# index files (Claude's MEMORY.md is an index of the real memory files).
 sources_for() {
   case "$1" in
     claude)
       for f in "$HOME"/.claude/projects/*/memory/*.md; do
-        [ -f "$f" ] && echo "$f"
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in MEMORY.md) continue ;; esac
+        echo "$f"
       done
       ;;
     codex)
@@ -109,8 +123,97 @@ sources_for() {
   esac
 }
 
-cmd_sync() {
-  require_src
+# Replace (or append) the marker-delimited import section for one agent
+# inside the synthesized file. Deterministic: unchanged stores produce a
+# byte-identical document.
+import_into_canon() {
+  from="$1"
+  content="$2"
+  begin="<!-- agent-sync:begin imported:$from -->"
+  end="<!-- agent-sync:end imported:$from -->"
+  tmp="$SRC.tmp.$$"
+  if grep -qF "$begin" "$SRC"; then
+    awk -v b="$begin" -v e="$end" -v f="$content" '
+      $0 == b { print; while ((getline line < f) > 0) print line; skip = 1; next }
+      $0 == e { skip = 0; print; next }
+      !skip { print }
+    ' "$SRC" >"$tmp"
+  else
+    {
+      cat "$SRC"
+      printf '\n%s\n' "$begin"
+      cat "$content"
+      printf '%s\n' "$end"
+    } >"$tmp"
+  fi
+  mv "$tmp" "$SRC"
+}
+
+# Fold one agent's memory stores into the synthesized file.
+# Prints the number of files folded.
+import_agent() {
+  from="$1"
+  content="${TMPDIR:-/tmp}/agent-import.$$"
+  list="${TMPDIR:-/tmp}/agent-import-list.$$"
+  {
+    echo "## Memories imported from $from"
+    echo
+    echo "Raw import, refreshed on every sync. Ask your agent to consolidate"
+    echo "the durable parts into the curated sections and prune duplicates."
+  } >"$content"
+  sources_for "$from" >"$list"
+  found=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    {
+      echo
+      echo "### $f"
+      echo
+      cat "$f"
+    } >>"$content"
+    found=$((found + 1))
+  done <"$list"
+  rm -f "$list"
+  if [ "$found" -gt 0 ]; then
+    import_into_canon "$from" "$content"
+  fi
+  rm -f "$content"
+  echo "$found"
+}
+
+# Optional semantic merge: the synthesizer command reads a prompt on stdin
+# and must print the complete merged markdown document on stdout.
+synthesize() {
+  prompt="${TMPDIR:-/tmp}/agent-synth-prompt.$$"
+  out="${TMPDIR:-/tmp}/agent-synth-out.$$"
+  {
+    cat <<'EOF'
+You are the memory synthesizer for agent-sync. Below is the synthesized
+memory file for this machine's AI coding agents. It contains curated
+sections plus marker-delimited sections of raw memories imported from
+individual agents. Rewrite the whole document: fold the durable,
+non-duplicated facts from the imported sections into the curated sections,
+drop noise and duplicates, resolve conflicts in favor of the newest
+information, keep the document's structure and voice, and remove the
+imported sections you fold in. Print ONLY the new markdown document.
+EOF
+    echo
+    echo '--- DOCUMENT ---'
+    cat "$SRC"
+  } >"$prompt"
+  if AGENT_SYNC_ACTIVE=1 sh -c "$AGENT_SYNC_SYNTHESIZER" <"$prompt" >"$out" &&
+    [ -s "$out" ] && head -1 "$out" | grep -q '^#'; then
+    cp "$SRC" "$SRC.bak"
+    mv "$out" "$SRC"
+    echo "synthesized via: $AGENT_SYNC_SYNTHESIZER (previous file at $SRC.bak)"
+  else
+    rm -f "$out"
+    echo "agent: synthesizer failed or printed a non-document; keeping the mechanical merge" >&2
+  fi
+  rm -f "$prompt"
+}
+
+distribute() {
   while IFS='|' read -r name dir dest mode; do
     if [ ! -d "$dir" ]; then
       echo "$name: skipped (not installed)"
@@ -128,6 +231,18 @@ cmd_sync() {
   done <<EOF
 $(targets)
 EOF
+}
+
+cmd_sync() {
+  require_src
+  for name in claude codex cursor continue windsurf; do
+    n=$(import_agent "$name")
+    [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
+  done
+  if [ -n "${AGENT_SYNC_SYNTHESIZER:-}" ]; then
+    synthesize
+  fi
+  distribute
 }
 
 cmd_status() {
@@ -180,32 +295,6 @@ $(targets)
 EOF
 }
 
-# Replace (or append) the marker-delimited import section for one agent
-# inside the canonical file. Re-running a migrate refreshes its section
-# instead of duplicating it.
-import_into_canon() {
-  from="$1"
-  content="$2"
-  begin="<!-- agent-sync:begin imported:$from -->"
-  end="<!-- agent-sync:end imported:$from -->"
-  tmp="$SRC.tmp.$$"
-  if grep -qF "$begin" "$SRC"; then
-    awk -v b="$begin" -v e="$end" -v f="$content" '
-      $0 == b { print; while ((getline line < f) > 0) print line; skip = 1; next }
-      $0 == e { skip = 0; print; next }
-      !skip { print }
-    ' "$SRC" >"$tmp"
-  else
-    {
-      cat "$SRC"
-      printf '\n%s\n' "$begin"
-      cat "$content"
-      printf '%s\n' "$end"
-    } >"$tmp"
-  fi
-  mv "$tmp" "$SRC"
-}
-
 cmd_migrate() {
   from="${1:-}"
   if [ -z "$from" ]; then
@@ -213,36 +302,13 @@ cmd_migrate() {
     exit 2
   fi
   require_src
-  content="${TMPDIR:-/tmp}/agent-migrate.$$"
-  {
-    echo "## Memories imported from $from ($(date +%Y-%m-%d))"
-    echo
-    echo "Raw import; ask your agent to consolidate the durable parts into"
-    echo "the sections above and prune this block."
-  } >"$content"
-  list="${TMPDIR:-/tmp}/agent-migrate-list.$$"
-  sources_for "$from" >"$list"
-  found=0
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    {
-      echo
-      echo "### $f"
-      echo
-      cat "$f"
-    } >>"$content"
-    found=$((found + 1))
-  done <"$list"
-  rm -f "$list"
-  if [ "$found" -eq 0 ]; then
-    rm -f "$content"
+  n=$(import_agent "$from")
+  if [ "$n" -eq 0 ]; then
     echo "agent: no readable memory stores found for $from" >&2
     exit 1
   fi
-  import_into_canon "$from" "$content"
-  rm -f "$content"
-  echo "imported $found file(s) from $from into $SRC"
-  cmd_sync
+  echo "$from: folded $n memory file(s) into $SRC"
+  distribute
 }
 
 cmd_gather() {
@@ -260,7 +326,6 @@ cmd_gather() {
   done
   rm -f "$list"
   echo "gathered $gathered memory file(s) into $dest"
-  echo "next: consolidate the durable parts into $SRC, then run: agent sync"
   echo "note: gathered files can contain private context; do not commit them"
 }
 

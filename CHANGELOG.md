@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The format
+follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
+project adheres to [Semantic Versioning](https://semver.org/).
+
+## [1.1.0] - 2026-08-16
+
+### Changed
+
+- `sync` is now a full round trip: it gathers every agent's own memory
+  stores, folds them into the synthesized memory file under managed
+  markers, optionally runs a semantic synthesizer
+  (`AGENT_SYNC_SYNTHESIZER`), then redistributes to all installed agents.
+- `migrate` folds a single agent's stores in and redistributes.
+- Claude's per-project `MEMORY.md` index files are excluded from gathering
+  (indexes, not memories).
+
+### Added
+
+- `AGENT_SYNC_SYNTHESIZER`: a command reading a merge prompt on stdin and
+  printing the merged document on stdout (for example `claude -p`); the
+  previous file is kept at `<file>.bak`.
+- Recursion guard so a synthesizer-spawned agent never re-enters agent-sync.
+- Community health files, issue/PR templates, `.editorconfig`, this
+  changelog.
+
+## [1.0.0] - 2026-08-16
+
+### Added
+
+- `agent sync`, `agent status`, `agent targets`, `agent migrate`,
+  `agent gather`.
+- Targets: Codex, Gemini, Qwen, Continue, Windsurf, Cursor (generated
+  `.mdc`).
+- `make install` (macOS and Linux, POSIX sh), CI (shellcheck + smoke on
+  ubuntu and macos), MIT license.
+- `docs/coordination.md`: cross-agent task coordination protocol (headless
+  invocation, task directories, mkdir locks, git worktrees), with a
+  verified Claude Code to Codex round trip.

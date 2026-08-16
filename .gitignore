@@ -1,2 +1,19 @@
+# OS / editor
 .DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment & secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Gathered agent memories (private context)
 agent-memories/
+
+# Logs & temp
+*.log
+tmp/
