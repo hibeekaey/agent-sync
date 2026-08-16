@@ -22,6 +22,11 @@ DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
 TAB=$(printf '\t')
 DRY_RUN=0
+TARGET_ONLY="${AGENT_SYNC_ONLY:-}"
+TARGET_SKIP="${AGENT_SYNC_SKIP:-}"
+STATE_DIR="$AGENT_HOME/.config/agent-sync"
+PACKS_DIR="$STATE_DIR/packs"
+PACKS_LOCK="$STATE_DIR/packs.lock"
 PRIVATE_TMP=""
 CANON_TMP=""
 APPLY_TMP=""
@@ -122,6 +127,21 @@ crush|$AGENT_HOME/.config/crush|$AGENT_HOME/.config/crush/CRUSH.md|copy
 roo|$AGENT_HOME/.roo|$AGENT_HOME/.roo/rules/agent-sync.md|copy
 cline|$AGENT_HOME/Documents/Cline|$AGENT_HOME/Documents/Cline/Rules/agent-sync.md|copy
 EOF
+}
+
+# Per-agent targeting: --only/--skip flags and AGENT_SYNC_ONLY/AGENT_SYNC_SKIP
+# env vars hold comma-separated target names.
+target_selected() {
+  if [ -n "$TARGET_ONLY" ]; then
+    case ",$TARGET_ONLY," in
+      *",$1,"*) ;;
+      *) return 1 ;;
+    esac
+  fi
+  case ",$TARGET_SKIP," in
+    *",$1,"*) return 1 ;;
+  esac
+  return 0
 }
 
 # Cursor rules need .mdc frontmatter around the same body.
@@ -321,6 +341,28 @@ parse_synthesizer_args() {
       --dry-run)
         DRY_RUN=1
         ;;
+      --only)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "agent: --only requires a comma-separated target list" >&2
+          return 2
+        fi
+        TARGET_ONLY="$1"
+        ;;
+      --only=*)
+        TARGET_ONLY=${1#*=}
+        ;;
+      --skip)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "agent: --skip requires a comma-separated target list" >&2
+          return 2
+        fi
+        TARGET_SKIP="$1"
+        ;;
+      --skip=*)
+        TARGET_SKIP=${1#*=}
+        ;;
       *)
         echo "agent: unknown sync option: $1" >&2
         return 2
@@ -457,6 +499,10 @@ EOF
 
 distribute() {
   while IFS='|' read -r name dir dest mode; do
+    if ! target_selected "$name"; then
+      echo "$name: skipped (filtered)"
+      continue
+    fi
     if [ ! -d "$dir" ]; then
       echo "$name: skipped (not installed)"
       continue
@@ -489,6 +535,38 @@ $(targets)
 EOF
 }
 
+# Fold one installed memory pack into the synthesized file.
+import_pack() {
+  pname="$1"
+  ensure_private_tmp
+  content="$PRIVATE_TMP/pack-content"
+  {
+    echo "## Memory pack: $pname"
+    echo
+    echo "Installed via agent pack; refresh with: agent pack update"
+  } >"$content"
+  found=0
+  for f in "$PACKS_DIR/$pname"/*.md; do
+    [ -f "$f" ] || continue
+    {
+      echo
+      echo "### $(basename "$f")"
+      echo
+      cat "$f"
+      printf '\n'
+    } >>"$content"
+    found=$((found + 1))
+  done
+  import_into_canon "pack:$pname" "$content" "$found"
+}
+
+each_pack_name() {
+  [ -f "$PACKS_LOCK" ] || return 0
+  while IFS="$TAB" read -r pname _src _ref _sha; do
+    [ -n "$pname" ] && echo "$pname"
+  done <"$PACKS_LOCK"
+}
+
 cmd_sync() {
   parse_synthesizer_args "$@"
   require_src
@@ -496,10 +574,16 @@ cmd_sync() {
   for name in claude codex cursor continue windsurf goose; do
     validate_import_section "$name"
   done
+  for pname in $(each_pack_name); do
+    validate_import_section "pack:$pname"
+  done
   for name in claude codex cursor continue windsurf goose; do
     import_agent "$name"
     n="$IMPORTED_COUNT"
     [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
+  done
+  for pname in $(each_pack_name); do
+    import_pack "$pname"
   done
   synthesize
   distribute
@@ -510,6 +594,7 @@ cmd_status() {
   fails=0
   src_sum=$(sum "$SRC")
   while IFS='|' read -r name dir dest mode; do
+    target_selected "$name" || continue
     if [ ! -d "$dir" ]; then
       echo "$name: not installed"
       continue
@@ -712,6 +797,7 @@ cmd_diff() {
   stale=0
   ensure_private_tmp
   while IFS='|' read -r name dir dest mode; do
+    target_selected "$name" || continue
     [ -d "$dir" ] || continue
     expected="$SRC"
     if [ "$mode" = "cursor" ]; then
@@ -817,7 +903,18 @@ EOF
 # Junie, Goose, Jules and others; Claude Code needs an @AGENTS.md import
 # stub; Gemini CLI needs context.fileName in .gemini/settings.json.
 cmd_link() {
-  dir="${1:-.}"
+  dir="."
+  do_import=0
+  for a in "$@"; do
+    case "$a" in
+      --import) do_import=1 ;;
+      -*)
+        echo "agent: unknown link option: $a" >&2
+        exit 2
+        ;;
+      *) dir="$a" ;;
+    esac
+  done
   if [ ! -d "$dir" ]; then
     echo "agent: not a directory: $dir" >&2
     exit 2
@@ -862,7 +959,171 @@ cmd_link() {
       echo "link: note: $shadow shadows AGENTS.md in Zed (first-match order)"
     fi
   done
+  # --import: fold the repo's native per-tool configs into AGENTS.md under a
+  # managed marker, verbatim (frontmatter preserved), refreshed on re-run.
+  if [ "$do_import" -eq 1 ]; then
+    ensure_private_tmp
+    content="$PRIVATE_TMP/link-import"
+    {
+      echo "## Imported project agent configs"
+      echo
+      echo "Folded verbatim by agent link --import; re-run it to refresh."
+    } >"$content"
+    found=0
+    for f in "$dir"/.cursor/rules/*.mdc "$dir"/.cursorrules "$dir"/.windsurfrules \
+      "$dir"/.clinerules "$dir"/.clinerules/*.md "$dir"/.github/copilot-instructions.md \
+      "$dir"/.roo/rules/*.md "$dir"/.goosehints; do
+      [ -f "$f" ] || continue
+      {
+        echo
+        echo "### ${f#"$dir"/}"
+        echo
+        cat "$f"
+        printf '\n'
+      } >>"$content"
+      found=$((found + 1))
+    done
+    if [ "$found" -gt 0 ]; then
+      old_src="$SRC"
+      SRC="$agents_md"
+      if validate_import_section "project"; then
+        import_into_canon "project" "$content" "$found"
+        SRC="$old_src"
+        echo "link: imported $found native config file(s) into AGENTS.md"
+      else
+        SRC="$old_src"
+        exit 1
+      fi
+    else
+      echo "link: no native agent configs found to import"
+    fi
+  fi
   echo "link: done; AGENTS.md is the single project instructions file"
+}
+
+pack_lock_remove() {
+  pname="$1"
+  [ -f "$PACKS_LOCK" ] || return 0
+  ensure_private_tmp
+  awk -F "$TAB" -v n="$pname" '$1 != n' "$PACKS_LOCK" >"$PRIVATE_TMP/lock" &&
+    cp "$PRIVATE_TMP/lock" "$PACKS_LOCK"
+}
+
+# Shareable memory packs: markdown pulled from a GitHub repo at a pinned
+# commit, recorded in a lockfile, folded into the synthesized file on sync.
+cmd_pack() {
+  sub="${1:-list}"
+  case "$sub" in
+    add)
+      spec="${2:-}"
+      if [ -z "$spec" ]; then
+        echo "usage: agent pack add OWNER/REPO[@REF][:SUBDIR]" >&2
+        exit 2
+      fi
+      subdir=""
+      case "$spec" in *:*)
+        subdir=${spec#*:}
+        spec=${spec%%:*}
+        ;;
+      esac
+      ref="HEAD"
+      case "$spec" in *@*)
+        ref=${spec#*@}
+        spec=${spec%%@*}
+        ;;
+      esac
+      case "$spec" in
+        */*) ;;
+        *)
+          echo "agent: pack source must be OWNER/REPO" >&2
+          exit 2
+          ;;
+      esac
+      pname=$(printf '%s' "${spec#*/}${subdir:+-$(basename "$subdir")}" | tr -c 'A-Za-z0-9._\n-' '-')
+      sha=$(curl -fsSL "https://api.github.com/repos/$spec/commits/$ref" |
+        sed -n 's/^  "sha": *"\([0-9a-f]*\)".*/\1/p' | head -1)
+      if [ -z "$sha" ]; then
+        echo "agent: could not resolve $spec@$ref" >&2
+        exit 1
+      fi
+      ensure_private_tmp
+      curl -fsSL "https://codeload.github.com/$spec/tar.gz/$sha" -o "$PRIVATE_TMP/pack.tgz"
+      mkdir -p "$PRIVATE_TMP/pack-x"
+      tar -xzf "$PRIVATE_TMP/pack.tgz" -C "$PRIVATE_TMP/pack-x"
+      srcdir=$(find "$PRIVATE_TMP/pack-x" -mindepth 1 -maxdepth 1 -type d | head -1)
+      [ -n "$subdir" ] && srcdir="$srcdir/$subdir"
+      if [ ! -d "$srcdir" ]; then
+        echo "agent: subdir not found in pack: $subdir" >&2
+        exit 1
+      fi
+      mkdir -p "$PACKS_DIR/$pname"
+      rm -f "$PACKS_DIR/$pname"/*.md
+      copied=0
+      for f in "$srcdir"/*.md; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in LICENSE* | CHANGELOG* | CONTRIBUTING* | CODE_OF_CONDUCT*) continue ;; esac
+        cp "$f" "$PACKS_DIR/$pname/"
+        copied=$((copied + 1))
+      done
+      if [ "$copied" -eq 0 ]; then
+        echo "agent: no markdown files found in $spec${subdir:+:$subdir}" >&2
+        rmdir "$PACKS_DIR/$pname" 2>/dev/null || true
+        exit 1
+      fi
+      mkdir -p "$STATE_DIR"
+      touch "$PACKS_LOCK"
+      pack_lock_remove "$pname"
+      printf '%s\t%s\t%s\t%s\n' "$pname" "$spec${subdir:+:$subdir}" "$ref" "$sha" >>"$PACKS_LOCK"
+      echo "pack $pname: $copied file(s) pinned at $spec@$(printf '%.12s' "$sha")"
+      echo "run: agent sync (folds the pack into the synthesized file)"
+      ;;
+    list)
+      if [ -s "$PACKS_LOCK" ] 2>/dev/null; then
+        while IFS="$TAB" read -r pname psrc pref psha; do
+          [ -n "$pname" ] || continue
+          echo "$pname: $psrc@$pref (pinned $(printf '%.12s' "$psha"))"
+        done <"$PACKS_LOCK"
+      else
+        echo "no packs installed (agent pack add OWNER/REPO)"
+      fi
+      ;;
+    update)
+      only="${2:-}"
+      [ -f "$PACKS_LOCK" ] || {
+        echo "no packs installed"
+        exit 0
+      }
+      ensure_private_tmp
+      cp "$PACKS_LOCK" "$PRIVATE_TMP/lock-snapshot"
+      while IFS="$TAB" read -r pname psrc pref _sha; do
+        [ -n "$pname" ] || continue
+        [ -z "$only" ] || [ "$only" = "$pname" ] || continue
+        base=${psrc%%:*}
+        sub=""
+        case "$psrc" in *:*) sub=${psrc#*:} ;; esac
+        "$0" pack add "$base@$pref${sub:+:$sub}"
+      done <"$PRIVATE_TMP/lock-snapshot"
+      ;;
+    remove)
+      pname="${2:-}"
+      if [ -z "$pname" ]; then
+        echo "usage: agent pack remove NAME" >&2
+        exit 2
+      fi
+      rm -rf "${PACKS_DIR:?}/$pname"
+      pack_lock_remove "$pname"
+      if [ -f "$SRC" ] && validate_import_section "pack:$pname"; then
+        ensure_private_tmp
+        : >"$PRIVATE_TMP/empty"
+        import_into_canon "pack:$pname" "$PRIVATE_TMP/empty" 0
+      fi
+      echo "pack $pname removed; run: agent sync"
+      ;;
+    *)
+      echo "usage: agent pack <add|list|update|remove>" >&2
+      exit 2
+      ;;
+  esac
 }
 
 case "${1:-help}" in
@@ -877,6 +1138,10 @@ case "${1:-help}" in
   link)
     shift
     cmd_link "$@"
+    ;;
+  pack)
+    shift
+    cmd_pack "$@"
     ;;
   targets) cmd_targets ;;
   migrate)

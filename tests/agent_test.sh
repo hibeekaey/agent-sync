@@ -221,6 +221,44 @@ run_agent link "$LINK_DIR" >"$TEST_ROOT/link-custom.out"
 assert_contains "$LINK_DIR/CLAUDE.md" 'custom claude-only extras'
 assert_contains "$TEST_ROOT/link-custom.out" 'left untouched'
 
+# link --import folds native project configs into AGENTS.md, idempotently.
+mkdir -p "$LINK_DIR/.cursor/rules"
+printf -- '---\nglobs: ["*.ts"]\n---\ncursor scoped rule body\n' >"$LINK_DIR/.cursor/rules/scoped.mdc"
+printf 'cline project rule\n' >"$LINK_DIR/.clinerules"
+run_agent link "$LINK_DIR" --import >/dev/null
+assert_contains "$LINK_DIR/AGENTS.md" '<!-- agent-sync:begin imported:project -->'
+assert_contains "$LINK_DIR/AGENTS.md" 'cursor scoped rule body'
+assert_contains "$LINK_DIR/AGENTS.md" 'globs: ["*.ts"]'
+assert_contains "$LINK_DIR/AGENTS.md" 'cline project rule'
+cp "$LINK_DIR/AGENTS.md" "$TEST_ROOT/link-import-once.md"
+run_agent link "$LINK_DIR" --import >/dev/null
+cmp -s "$LINK_DIR/AGENTS.md" "$TEST_ROOT/link-import-once.md" ||
+  fail 'link --import is not idempotent'
+
+# Per-agent targeting: --skip filters a target; AGENT_SYNC_ONLY narrows to one.
+run_agent sync --skip qwen >"$TEST_ROOT/skip.out"
+assert_contains "$TEST_ROOT/skip.out" 'qwen: skipped (filtered)'
+AGENT_SYNC_ONLY=codex run_agent sync >"$TEST_ROOT/only.out"
+assert_contains "$TEST_ROOT/only.out" 'codex: synced'
+assert_contains "$TEST_ROOT/only.out" 'gemini: skipped (filtered)'
+run_agent sync >/dev/null
+
+# Packs fold into the canon from the lockfile and are fully removable.
+PACK_STATE="$AGENT_CONFIG_ROOT/.config/agent-sync"
+mkdir -p "$PACK_STATE/packs/testpack"
+printf '# Team conventions\n\nAlways write regression tests.\n' >"$PACK_STATE/packs/testpack/conventions.md"
+printf 'testpack\towner/repo\tHEAD\tdeadbeefdeadbeef\n' >"$PACK_STATE/packs.lock"
+run_agent sync >/dev/null
+assert_contains "$CANON" '<!-- agent-sync:begin imported:pack:testpack -->'
+assert_contains "$CANON" 'Always write regression tests.'
+run_agent pack list >"$TEST_ROOT/pack-list.out"
+assert_contains "$TEST_ROOT/pack-list.out" 'testpack: owner/repo@HEAD'
+run_agent pack remove testpack >/dev/null
+assert_not_contains "$CANON" 'Always write regression tests.'
+assert_not_contains "$CANON" 'imported:pack:testpack'
+[ ! -d "$PACK_STATE/packs/testpack" ] || fail 'pack remove left the pack directory'
+run_agent sync >/dev/null
+
 cp "$CANON" "$TEST_ROOT/idempotent.md"
 run_agent sync >/dev/null
 if ! cmp -s "$CANON" "$TEST_ROOT/idempotent.md"; then
