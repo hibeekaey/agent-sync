@@ -37,9 +37,13 @@ AGENT_SYNC_HOME=/tmp/scratch-agents \
 
 ## Releases
 
-Tagging `vX.Y.Z` runs the release workflow: it attaches the checksummed
-binary plus `SHA256SUMS` and bumps the Homebrew formula. Nothing is
-published by hand.
+Every change lands through a pull request; the required checks are the
+behavioral suite on ubuntu and macos plus skill validation. To release,
+bump `VERSION` in `bin/agent` and add a `CHANGELOG.md` entry in that pull
+request, then publish a release on the GitHub Releases page with the
+matching `vX.Y.Z` tag. Publishing runs the release workflow, which verifies
+the binary declares the released version, attaches it with `SHA256SUMS`,
+and bumps the Homebrew formula. Nothing is published by hand.
 
 The bundled skill rides the same release tags: `gh skill install` resolves
 `--pin vX.Y.Z` against them directly, so the skill needs no release of its

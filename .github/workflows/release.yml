@@ -1,8 +1,11 @@
 name: release
 
+# Publishing a release from the GitHub Releases page is the trigger. Keying
+# on tag pushes instead would silently skip any release published against a
+# tag that already exists.
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -12,20 +15,30 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: the released binary must declare the released version
+        run: |
+          DECLARED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
+          if [ "v$DECLARED" != "$TAG" ]; then
+            echo "bin/agent declares v$DECLARED but the release is $TAG" >&2
+            exit 1
+          fi
       - name: build checksummed assets
         run: |
           cp bin/agent agent
           sha256sum agent > SHA256SUMS
       - name: attach to the release
-        run: |
-          gh release upload "$GITHUB_REF_NAME" agent SHA256SUMS --clobber ||
-            gh release create "$GITHUB_REF_NAME" agent SHA256SUMS --generate-notes
+        run: gh release upload "$TAG" agent SHA256SUMS --clobber
 
   tap:
     needs: assets
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name }}
     steps:
       - name: bump the Homebrew formula
         env:
@@ -35,7 +48,7 @@ jobs:
             echo "TAP_TOKEN secret not set; skipping the tap bump"
             exit 0
           fi
-          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
           SHA=$(curl -fsSL "$URL" | sha256sum | cut -d' ' -f1)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/hibeekaey/homebrew-tap.git" tap
           cd tap
@@ -46,5 +59,5 @@ jobs:
           fi
           git config user.name "agent-sync-release"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: agent-sync ${GITHUB_REF_NAME#v}"
+          git commit -am "chore: agent-sync ${TAG#v}"
           git push
