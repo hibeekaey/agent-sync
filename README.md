@@ -207,8 +207,10 @@ gh skill install hibeekaey/agent-sync coordinate-agents \
   --scope user
 ```
 
-To install a specific release, add `--pin <tag>`. Without `gh`, copying
-`skills/coordinate-agents/` into your agent's skills directory works too.
+To pin a specific version, add `--pin vX.Y.Z` using any agent-sync release
+tag; the skill ships with the CLI and shares its version line. Without `gh`,
+copying `skills/coordinate-agents/` into your agent's skills directory works
+too.
 
 ## MCP, skills, packs and hooks
 
