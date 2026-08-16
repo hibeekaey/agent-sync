@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.2.2"
+VERSION="1.3.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -27,6 +27,8 @@ APPLY_TMP=""
 MANIFEST_TMP=""
 TARGET_TMP=""
 IMPORTED_COUNT=0
+SYNTHESIZER_REQUEST=""
+SYNTHESIZER_FROM_CLI=0
 
 cleanup() {
   [ -z "$CANON_TMP" ] || rm -f "$CANON_TMP"
@@ -53,16 +55,17 @@ usage() {
 agent v$VERSION: synchronize agent memory across AI coding agents
 
 Usage:
-  agent sync             gather every agent's memory stores, fold them into
-                         the synthesized memory file, and redistribute it to
-                         all installed agents
+  agent sync [--synthesizer MODE]
+                         gather every agent's memory stores, synthesize them,
+                         and redistribute to all installed agents
   agent status           per-agent parity check (exit 1 if anything is stale)
   agent targets          list sync targets and whether each tool is installed
   agent migrate AGENT    fold just one agent's memory stores in, then
                          redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
                          (default: ./agent-memories) for editing and review
-  agent apply [DIR]      push edited staged files from a gather DIR back to
+  agent apply [DIR] [--synthesizer MODE]
+                         push edited staged files from a gather DIR back to
                          their original stores, then run the full sync
   agent help             this text
 
@@ -74,11 +77,11 @@ Agents with readable memory stores: claude, codex, cursor, continue, windsurf.
 
 Synthesized memory file: $SRC (override with AGENT_SYNC_SOURCE)
 Agent configuration root: $AGENT_HOME (override with AGENT_SYNC_HOME)
-Semantic merging: set AGENT_SYNC_SYNTHESIZER to a command that reads a merge
-prompt on stdin and prints the merged document on stdout, for example:
+Synthesis modes: auto (default), claude, codex, deterministic. Auto tries
+Claude, then Codex, then keeps the deterministic merge. Select a mode with
+--synthesizer MODE or AGENT_SYNC_SYNTHESIZER. The environment variable also
+accepts a custom command that reads a merge prompt and prints the document:
   AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
-Without it, sync does a mechanical merge: each agent's memories land in a
-marker-delimited section that refreshes in place on every run.
 
 Tools are detected by their config directory; absent tools are skipped, so
 one binary serves every machine.
@@ -261,9 +264,106 @@ import_agent() {
   IMPORTED_COUNT="$found"
 }
 
-# Optional semantic merge: the synthesizer command reads a prompt on stdin
-# and must print the complete merged markdown document on stdout.
+parse_synthesizer_args() {
+  SYNTHESIZER_REQUEST="${AGENT_SYNC_SYNTHESIZER:-auto}"
+  SYNTHESIZER_FROM_CLI=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --synthesizer)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "agent: --synthesizer requires a mode" >&2
+          return 2
+        fi
+        SYNTHESIZER_REQUEST="$1"
+        SYNTHESIZER_FROM_CLI=1
+        ;;
+      --synthesizer=*)
+        SYNTHESIZER_REQUEST=${1#*=}
+        SYNTHESIZER_FROM_CLI=1
+        ;;
+      *)
+        echo "agent: unknown sync option: $1" >&2
+        return 2
+        ;;
+    esac
+    shift
+  done
+  case "$SYNTHESIZER_REQUEST" in
+    auto | claude | codex | deterministic) ;;
+    *)
+      if [ "$SYNTHESIZER_FROM_CLI" -eq 1 ]; then
+        echo "agent: unknown synthesizer mode: $SYNTHESIZER_REQUEST" >&2
+        return 2
+      fi
+      ;;
+  esac
+}
+
+require_selected_synthesizer() {
+  case "$SYNTHESIZER_REQUEST" in
+    claude | codex)
+      if ! command -v "$SYNTHESIZER_REQUEST" >/dev/null 2>&1; then
+        echo "agent: requested synthesizer is not installed: $SYNTHESIZER_REQUEST" >&2
+        return 1
+      fi
+      ;;
+  esac
+}
+
+valid_synth_output() {
+  [ -s "$1" ] && head -1 "$1" | grep -q '^#'
+}
+
+try_synthesizer() {
+  kind="$1"
+  prompt="$2"
+  out="$3"
+  : >"$out"
+  run_status=0
+  case "$kind" in
+    claude)
+      AGENT_SYNC_ACTIVE=1 claude -p --no-session-persistence \
+        --permission-mode dontAsk <"$prompt" >"$out" || run_status=$?
+      ;;
+    codex)
+      AGENT_SYNC_ACTIVE=1 codex exec --skip-git-repo-check \
+        --sandbox read-only --ephemeral --color never - <"$prompt" >"$out" ||
+        run_status=$?
+      ;;
+    custom)
+      AGENT_SYNC_ACTIVE=1 sh -c "$SYNTHESIZER_REQUEST" <"$prompt" >"$out" ||
+        run_status=$?
+      ;;
+  esac
+  [ "$run_status" -eq 0 ] && valid_synth_output "$out"
+}
+
+accept_synth_output() {
+  kind="$1"
+  out="$2"
+  CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
+    echo "agent: could not create a temporary file beside $SRC" >&2
+    exit 1
+  }
+  cp "$out" "$CANON_TMP"
+  cp "$SRC" "$SRC.bak"
+  mv "$CANON_TMP" "$SRC"
+  CANON_TMP=""
+  echo "synthesized via: $kind (previous file at $SRC.bak)"
+}
+
 synthesize() {
+  if [ "$SYNTHESIZER_REQUEST" = "deterministic" ]; then
+    echo "synthesis: deterministic merge"
+    return
+  fi
+  if [ "$SYNTHESIZER_REQUEST" = "auto" ] &&
+    ! command -v claude >/dev/null 2>&1 &&
+    ! command -v codex >/dev/null 2>&1; then
+    echo "synthesis: deterministic merge (Claude and Codex not installed)"
+    return
+  fi
   ensure_private_tmp
   prompt="$PRIVATE_TMP/synth-prompt"
   out="$PRIVATE_TMP/synth-out"
@@ -282,14 +382,34 @@ EOF
     echo '--- DOCUMENT ---'
     cat "$SRC"
   } >"$prompt"
-  if AGENT_SYNC_ACTIVE=1 sh -c "$AGENT_SYNC_SYNTHESIZER" <"$prompt" >"$out" &&
-    [ -s "$out" ] && head -1 "$out" | grep -q '^#'; then
-    cp "$SRC" "$SRC.bak"
-    mv "$out" "$SRC"
-    echo "synthesized via: $AGENT_SYNC_SYNTHESIZER (previous file at $SRC.bak)"
-  else
-    echo "agent: synthesizer failed or printed a non-document; keeping the mechanical merge" >&2
-  fi
+  case "$SYNTHESIZER_REQUEST" in
+    auto)
+      for kind in claude codex; do
+        command -v "$kind" >/dev/null 2>&1 || continue
+        if try_synthesizer "$kind" "$prompt" "$out"; then
+          accept_synth_output "$kind" "$out"
+          return
+        fi
+        echo "agent: $kind synthesis failed; trying the next fallback" >&2
+      done
+      echo "synthesis: deterministic merge (no usable Claude or Codex)"
+      return
+      ;;
+    claude | codex)
+      if try_synthesizer "$SYNTHESIZER_REQUEST" "$prompt" "$out"; then
+        accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
+      else
+        echo "agent: $SYNTHESIZER_REQUEST synthesis failed; keeping the deterministic merge" >&2
+      fi
+      ;;
+    *)
+      if try_synthesizer custom "$prompt" "$out"; then
+        accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
+      else
+        echo "agent: custom synthesizer failed; keeping the deterministic merge" >&2
+      fi
+      ;;
+  esac
 }
 
 distribute() {
@@ -316,7 +436,9 @@ EOF
 }
 
 cmd_sync() {
+  parse_synthesizer_args "$@"
   require_src
+  require_selected_synthesizer
   for name in claude codex cursor continue windsurf; do
     validate_import_section "$name"
   done
@@ -325,9 +447,7 @@ cmd_sync() {
     n="$IMPORTED_COUNT"
     [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
   done
-  if [ -n "${AGENT_SYNC_SYNTHESIZER:-}" ]; then
-    synthesize
-  fi
+  synthesize
   distribute
 }
 
@@ -474,7 +594,18 @@ validate_manifest() {
 }
 
 cmd_apply() {
-  dir="${1:-./agent-memories}"
+  dir="./agent-memories"
+  case "${1:-}" in
+    "" | --synthesizer | --synthesizer=*) ;;
+    --*)
+      echo "agent: unknown apply option: $1" >&2
+      return 2
+      ;;
+    *)
+      dir="$1"
+      shift
+      ;;
+  esac
   manifest="$dir/.agent-manifest"
   if [ ! -f "$manifest" ]; then
     echo "agent: $dir is not a gather directory (missing .agent-manifest)" >&2
@@ -486,6 +617,8 @@ cmd_apply() {
     exit 1
   fi
   require_src
+  parse_synthesizer_args "$@"
+  require_selected_synthesizer
   validate_manifest "$dir" "$manifest"
   updated=0
   while IFS="$TAB" read -r staged orig; do
@@ -508,11 +641,14 @@ cmd_apply() {
     fi
   done <"$manifest"
   echo "$updated store file(s) updated from $dir"
-  cmd_sync
+  cmd_sync "$@"
 }
 
 case "${1:-help}" in
-  sync) cmd_sync ;;
+  sync)
+    shift
+    cmd_sync "$@"
+    ;;
   status) cmd_status ;;
   targets) cmd_targets ;;
   migrate)

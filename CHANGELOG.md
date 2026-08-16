@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-08-16
+
+### Added
+
+| Feature | Behaviour |
+| --- | --- |
+| Automatic synthesis | Claude, then Codex, then deterministic fallback |
+| `--synthesizer MODE` | Select `auto`, `claude`, `codex`, or `deterministic` for `sync` and `apply` |
+| Built-in environment modes | `AGENT_SYNC_SYNTHESIZER` accepts the same names while retaining custom-command support |
+| Constrained model execution | Claude is non-persistent; Codex is ephemeral and read-only |
+
 ## [1.2.2] - 2026-08-16
 
 ### Fixed

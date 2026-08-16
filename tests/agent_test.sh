@@ -9,6 +9,8 @@ AGENT_CONFIG_ROOT="$TEST_ROOT/config"
 CANON="$TEST_ROOT/canon.md"
 GATHER_DIR="$TEST_ROOT/gathered"
 TEST_TMPDIR="$TEST_ROOT/tmp"
+MOCK_BIN="$TEST_ROOT/mock-bin"
+SYNTH_LOG="$TEST_ROOT/synthesizer.log"
 
 cleanup() {
   rm -rf "$TEST_ROOT"
@@ -41,6 +43,7 @@ run_agent() {
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=deterministic \
     "$AGENT_BIN" "$@"
 }
 
@@ -53,12 +56,61 @@ run_agent_with_synthesizer() {
     "$AGENT_BIN" "$@"
 }
 
+run_agent_auto() {
+  PATH="$MOCK_BIN:/usr/bin:/bin" \
+    TMPDIR="$TEST_TMPDIR" \
+    SYNTH_LOG="$SYNTH_LOG" \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=auto \
+    "$AGENT_BIN" "$@"
+}
+
+run_agent_without_models() {
+  PATH="/usr/bin:/bin" \
+    TMPDIR="$TEST_TMPDIR" \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=auto \
+    "$AGENT_BIN" "$@"
+}
+
+write_claude_mock() {
+  result="$1"
+  if [ "$result" = "success" ]; then
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
+      'printf "claude\\n" >>"$SYNTH_LOG"' \
+      'printf "# Claude synthesized memory\\n"' >"$MOCK_BIN/claude"
+  else
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
+      'printf "claude\\n" >>"$SYNTH_LOG"' \
+      'exit 1' >"$MOCK_BIN/claude"
+  fi
+  chmod +x "$MOCK_BIN/claude"
+}
+
+write_codex_mock() {
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '[ "$*" = "exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -" ] || exit 2' \
+    'printf "codex\\n" >>"$SYNTH_LOG"' \
+    'printf "# Codex synthesized memory\\n"' >"$MOCK_BIN/codex"
+  chmod +x "$MOCK_BIN/codex"
+}
+
 CLAUDE_A="$AGENT_CONFIG_ROOT/.claude/projects/project-a/memory/shared.md"
 CLAUDE_B="$AGENT_CONFIG_ROOT/.claude/projects/project-b/memory/shared.md"
 CODEX_MEMORY="$AGENT_CONFIG_ROOT/.codex/memories/project.md"
 
 mkdir -p \
   "$TEST_TMPDIR" \
+  "$MOCK_BIN" \
   "$(dirname "$CLAUDE_A")" \
   "$(dirname "$CLAUDE_B")" \
   "$(dirname "$CODEX_MEMORY")" \
@@ -131,6 +183,54 @@ if run_agent apply "$GATHER_DIR" >"$TEST_ROOT/unsafe.out" 2>&1; then
 fi
 assert_contains "$TEST_ROOT/outside.md" 'safe'
 assert_not_contains "$TEST_ROOT/outside.md" 'unsafe'
+
+write_claude_mock success
+write_codex_mock
+: >"$SYNTH_LOG"
+run_agent_auto sync >/dev/null
+assert_contains "$CANON" '# Claude synthesized memory'
+assert_contains "$SYNTH_LOG" 'claude'
+assert_not_contains "$SYNTH_LOG" 'codex'
+
+: >"$SYNTH_LOG"
+run_agent_auto sync --synthesizer codex >/dev/null
+assert_contains "$CANON" '# Codex synthesized memory'
+assert_contains "$SYNTH_LOG" 'codex'
+assert_not_contains "$SYNTH_LOG" 'claude'
+
+write_claude_mock failure
+: >"$SYNTH_LOG"
+run_agent_auto sync >/dev/null 2>&1
+assert_contains "$CANON" '# Codex synthesized memory'
+assert_contains "$SYNTH_LOG" 'claude'
+assert_contains "$SYNTH_LOG" 'codex'
+
+run_agent_without_models sync >/dev/null
+assert_contains "$CANON" '<!-- agent-sync:begin imported:claude -->'
+cp "$CANON" "$TEST_ROOT/before-invalid-mode.md"
+if run_agent sync --synthesizer invalid >"$TEST_ROOT/invalid-mode.out" 2>&1; then
+  fail 'sync accepted an invalid synthesizer mode'
+fi
+cmp -s "$CANON" "$TEST_ROOT/before-invalid-mode.md" ||
+  fail 'invalid synthesizer selection modified the canon'
+
+cp "$CANON" "$TEST_ROOT/before-missing-agent.md"
+if run_agent_without_models sync --synthesizer claude >"$TEST_ROOT/missing-agent.out" 2>&1; then
+  fail 'sync accepted an explicitly selected missing synthesizer'
+fi
+cmp -s "$CANON" "$TEST_ROOT/before-missing-agent.md" ||
+  fail 'missing synthesizer selection modified the canon'
+
+MISSING_APPLY_DIR="$TEST_ROOT/missing-apply"
+run_agent gather "$MISSING_APPLY_DIR" >/dev/null
+missing_staged=$(awk -F '\t' -v path="$CLAUDE_A" '$2 == path { print $1 }' "$MISSING_APPLY_DIR/.agent-manifest")
+printf 'must not be applied\n' >"$MISSING_APPLY_DIR/$missing_staged"
+cp "$CLAUDE_A" "$TEST_ROOT/before-missing-apply.md"
+if run_agent_without_models apply "$MISSING_APPLY_DIR" --synthesizer claude >"$TEST_ROOT/missing-apply.out" 2>&1; then
+  fail 'apply accepted an explicitly selected missing synthesizer'
+fi
+cmp -s "$CLAUDE_A" "$TEST_ROOT/before-missing-apply.md" ||
+  fail 'apply wrote stores before rejecting a missing synthesizer'
 
 run_agent_with_synthesizer sync >/dev/null
 assert_contains "$CANON" '# Synthesized memory'
