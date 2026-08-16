@@ -14,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
+        if: runner.os == 'Linux'
         run: shellcheck bin/agent
       - name: smoke
         run: make test
