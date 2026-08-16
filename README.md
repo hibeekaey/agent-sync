@@ -1,7 +1,23 @@
 # agent-sync
 
-Synchronize your AI coding agents' memory, so you can stop in one agent and
-pick up in another.
+**One memory, every agent.** Synchronize your AI coding agents' memory, so
+you can stop in one agent and pick up in another.
+
+[![CI](https://github.com/hibeekaey/agent-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/hibeekaey/agent-sync/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/hibeekaey/agent-sync)](https://github.com/hibeekaey/agent-sync/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![POSIX sh](https://img.shields.io/badge/made%20with-POSIX%20sh-1f425f.svg)](bin/agent)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-blue)](#install)
+[![Last commit](https://img.shields.io/github/last-commit/hibeekaey/agent-sync)](https://github.com/hibeekaey/agent-sync/commits/main)
+[![Stars](https://img.shields.io/github/stars/hibeekaey/agent-sync?style=social)](https://github.com/hibeekaey/agent-sync/stargazers)
+
+![Claude Code](https://img.shields.io/badge/Claude%20Code-D97757?logo=claude&logoColor=white)
+![Codex](https://img.shields.io/badge/Codex-000000?logo=openai&logoColor=white)
+![Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-4285F4?logo=googlegemini&logoColor=white)
+![Qwen Code](https://img.shields.io/badge/Qwen%20Code-6236FF)
+![Continue](https://img.shields.io/badge/Continue-2AF598)
+![Windsurf](https://img.shields.io/badge/Windsurf-0B100F)
+![Cursor](https://img.shields.io/badge/Cursor-111111)
 
 Every coding agent accumulates knowledge about you and your projects: Claude
 Code writes memory files, Codex keeps a memory store, Cursor and Continue
@@ -125,6 +141,23 @@ cp -R skills/coordinate-agents ~/.codex/skills/    # Codex CLI
 - `AGENT_SYNC_SOURCE` overrides the synthesized file location.
 - `agent help` for the full usage text.
 
+## Contributing
+
+Contributions are welcome, especially support for new agents (see the
+[feature request template](.github/ISSUE_TEMPLATE/feature_request.md) for
+what a new target needs). Start with [CONTRIBUTING.md](CONTRIBUTING.md);
+this project follows a [Code of Conduct](CODE_OF_CONDUCT.md) and takes
+security reports privately per [SECURITY.md](SECURITY.md).
+
+## Support the project
+
+If agent-sync saves you from re-teaching your agents who you are:
+
+- **Star the repo.** It genuinely helps others find it.
+- **Share it** with someone juggling more than one coding agent.
+- **[Sponsor](https://github.com/sponsors/hibeekaey)** if it earns a place
+  in your daily loop.
+
 ## License
 
-MIT
+[MIT](LICENSE)
