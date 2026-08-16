@@ -1,6 +1,7 @@
 ---
 name: coordinate-agents
 description: Coordinate a task across multiple AI coding agents (Claude Code, Codex, Gemini, and others). Use when the user asks to delegate work to another agent, get a second opinion or review from a different agent, run agents in parallel on one task, or split a task between agents. The invoking agent becomes the coordinator; other agents are workers.
+license: MIT
 ---
 
 # Coordinating work across coding agents
