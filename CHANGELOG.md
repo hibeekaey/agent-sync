@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-08-16
+
+### Added
+
+| Feature | Behaviour |
+| --- | --- |
+| 10 new sync targets | OpenCode, Amp, Goose, GitHub Copilot CLI, Zed, Junie, Kiro, Crush, Roo Code, Cline — every global-instructions path verified against official documentation |
+| Goose memory gathering | `~/.config/goose/memory/` folds into the synthesized file like the other stores |
+| Adopt safety + `agent revert` | The first overwrite of a differing pre-existing file keeps it as `<file>.orig`; `revert` restores all `.orig` backups and the `.bak` |
+| `agent link [DIR]` | Project scope: seeds a repo-root `AGENTS.md`, bridges Claude Code with an `@AGENTS.md` stub, configures Gemini CLI `context.fileName`, warns about Zed first-match shadowing |
+| `agent diff` | Stale targets as unified diffs; exit 1 on drift (CI gate) |
+| `agent doctor` | Setup diagnosis: file, markers, detected agents, synthesis availability, staleness |
+| `--dry-run` | For `sync` and `apply`: print every action, write nothing |
+| Distribution | `install.sh` with SHA256SUMS verification, release-asset workflow, bash + zsh completions, `agent(1)` man page (scdoc source + committed roff) |
+
+### Notes
+
+- Aider is deliberately not a target: it has no global instructions
+  mechanism (verified); wire `read:` in `~/.aider.conf.yml` yourself.
+- Antigravity is covered via the shared `~/.gemini/GEMINI.md` target.
+
 ## [1.3.1] - 2026-08-16
 
 ### Added

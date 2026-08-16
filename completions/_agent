@@ -1,0 +1,38 @@
+#compdef agent
+# zsh completion for agent (agent-sync)
+
+_agent() {
+  local -a commands
+  commands=(
+    'sync:gather, synthesize, and redistribute agent memory'
+    'status:per-agent parity check'
+    'diff:show stale targets as unified diffs'
+    'targets:list sync targets and detection state'
+    'doctor:diagnose the setup'
+    'migrate:fold one agent'\''s memory stores in'
+    'gather:stage memory stores for editing'
+    'apply:push staged edits back, then sync'
+    'link:make a repo AGENTS.md readable by every agent'
+    'revert:restore .orig and .bak backups'
+    'help:show usage'
+    'version:print the version'
+  )
+  if ((CURRENT == 2)); then
+    _describe 'command' commands
+    return
+  fi
+  case "$words[2]" in
+    migrate)
+      _values 'agent' claude codex cursor continue windsurf goose
+      ;;
+    gather | apply | link)
+      _files -/
+      ;;
+    sync | apply)
+      _arguments '--dry-run[print actions without writing]' \
+        '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)'
+      ;;
+  esac
+}
+
+_agent "$@"

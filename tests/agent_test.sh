@@ -108,22 +108,38 @@ CLAUDE_A="$AGENT_CONFIG_ROOT/.claude/projects/project-a/memory/shared.md"
 CLAUDE_B="$AGENT_CONFIG_ROOT/.claude/projects/project-b/memory/shared.md"
 CODEX_MEMORY="$AGENT_CONFIG_ROOT/.codex/memories/project.md"
 
+GOOSE_MEMORY="$AGENT_CONFIG_ROOT/.config/goose/memory/project.md"
+
 mkdir -p \
   "$TEST_TMPDIR" \
   "$MOCK_BIN" \
   "$(dirname "$CLAUDE_A")" \
   "$(dirname "$CLAUDE_B")" \
   "$(dirname "$CODEX_MEMORY")" \
+  "$(dirname "$GOOSE_MEMORY")" \
   "$AGENT_CONFIG_ROOT/.gemini" \
   "$AGENT_CONFIG_ROOT/.qwen" \
   "$AGENT_CONFIG_ROOT/.continue/rules" \
   "$AGENT_CONFIG_ROOT/.codeium/windsurf/memories" \
-  "$AGENT_CONFIG_ROOT/.cursor/rules"
+  "$AGENT_CONFIG_ROOT/.cursor/rules" \
+  "$AGENT_CONFIG_ROOT/.config/opencode" \
+  "$AGENT_CONFIG_ROOT/.config/amp" \
+  "$AGENT_CONFIG_ROOT/.copilot" \
+  "$AGENT_CONFIG_ROOT/.config/zed" \
+  "$AGENT_CONFIG_ROOT/.junie" \
+  "$AGENT_CONFIG_ROOT/.kiro/steering" \
+  "$AGENT_CONFIG_ROOT/.config/crush" \
+  "$AGENT_CONFIG_ROOT/.roo/rules" \
+  "$AGENT_CONFIG_ROOT/Documents/Cline/Rules"
 
 printf '# Canon\n\nCurated memory.\n' >"$CANON"
 printf 'alpha without a final newline' >"$CLAUDE_A"
 printf 'bravo\n' >"$CLAUDE_B"
 printf 'obsolete codex memory\n' >"$CODEX_MEMORY"
+
+# Adopt safety: a pre-existing user-authored global file must be preserved
+# as .orig before the first overwrite, and only once.
+printf '# My own zed rules\n' >"$AGENT_CONFIG_ROOT/.config/zed/AGENTS.md"
 
 run_agent sync >/dev/null
 assert_contains "$CANON" '<!-- agent-sync:begin imported:claude -->'
@@ -132,6 +148,78 @@ assert_contains "$CANON" '<!-- agent-sync:begin imported:codex -->'
 cmp -s "$CANON" "$AGENT_CONFIG_ROOT/.claude/CLAUDE.md" ||
   fail 'a custom source was not redistributed to Claude'
 run_agent status >/dev/null
+
+# New targets received the synced file.
+for dest in \
+  "$AGENT_CONFIG_ROOT/.config/opencode/AGENTS.md" \
+  "$AGENT_CONFIG_ROOT/.config/amp/AGENTS.md" \
+  "$AGENT_CONFIG_ROOT/.config/goose/.goosehints" \
+  "$AGENT_CONFIG_ROOT/.copilot/copilot-instructions.md" \
+  "$AGENT_CONFIG_ROOT/.config/zed/AGENTS.md" \
+  "$AGENT_CONFIG_ROOT/.junie/AGENTS.md" \
+  "$AGENT_CONFIG_ROOT/.kiro/steering/agent-sync.md" \
+  "$AGENT_CONFIG_ROOT/.config/crush/CRUSH.md" \
+  "$AGENT_CONFIG_ROOT/.roo/rules/agent-sync.md" \
+  "$AGENT_CONFIG_ROOT/Documents/Cline/Rules/agent-sync.md"; do
+  cmp -s "$CANON" "$dest" || fail "new target not synced: $dest"
+done
+assert_contains "$AGENT_CONFIG_ROOT/.config/zed/AGENTS.md.orig" '# My own zed rules'
+run_agent sync >/dev/null
+assert_contains "$AGENT_CONFIG_ROOT/.config/zed/AGENTS.md.orig" '# My own zed rules'
+
+# revert restores the adopted original (and consumes the .orig).
+run_agent revert >/dev/null
+assert_contains "$AGENT_CONFIG_ROOT/.config/zed/AGENTS.md" '# My own zed rules'
+[ ! -f "$AGENT_CONFIG_ROOT/.config/zed/AGENTS.md.orig" ] ||
+  fail 'revert left the .orig behind'
+run_agent sync >/dev/null
+
+# Goose memories are gathered into the canon.
+printf 'goose remembers the deploy steps\n' >"$GOOSE_MEMORY"
+run_agent sync >/dev/null
+assert_contains "$CANON" 'goose remembers the deploy steps'
+rm -f "$GOOSE_MEMORY"
+run_agent sync >/dev/null
+assert_not_contains "$CANON" 'goose remembers the deploy steps'
+
+# diff exits 1 on a stale target and 0 when clean.
+printf 'stale content\n' >"$AGENT_CONFIG_ROOT/.junie/AGENTS.md"
+if run_agent diff >"$TEST_ROOT/diff.out" 2>&1; then
+  fail 'diff exited 0 with a stale target'
+fi
+assert_contains "$TEST_ROOT/diff.out" '.junie/AGENTS.md'
+run_agent sync >/dev/null
+run_agent diff >/dev/null || fail 'diff exited nonzero when everything is in sync'
+
+# dry-run mutates nothing anywhere.
+find "$AGENT_CONFIG_ROOT" -type f ! -name '*.orig' -exec cksum {} + | sort >"$TEST_ROOT/before-dry.sum"
+cp "$CANON" "$TEST_ROOT/before-dry-canon.md"
+run_agent sync --dry-run >"$TEST_ROOT/dry.out"
+assert_contains "$TEST_ROOT/dry.out" 'would sync'
+find "$AGENT_CONFIG_ROOT" -type f ! -name '*.orig' -exec cksum {} + | sort >"$TEST_ROOT/after-dry.sum"
+cmp -s "$TEST_ROOT/before-dry.sum" "$TEST_ROOT/after-dry.sum" ||
+  fail 'dry-run modified target files'
+cmp -s "$CANON" "$TEST_ROOT/before-dry-canon.md" || fail 'dry-run modified the canon'
+
+# doctor reports a healthy setup.
+run_agent doctor >"$TEST_ROOT/doctor.out" || fail 'doctor found problems in a healthy setup'
+assert_contains "$TEST_ROOT/doctor.out" 'no problems found'
+
+# link makes a repo AGENTS.md readable everywhere, idempotently.
+LINK_DIR="$TEST_ROOT/repo"
+mkdir -p "$LINK_DIR"
+printf '# Existing project instructions\n' >"$LINK_DIR/CLAUDE.md"
+run_agent link "$LINK_DIR" >/dev/null
+assert_contains "$LINK_DIR/AGENTS.md" '# Existing project instructions'
+[ "$(head -1 "$LINK_DIR/CLAUDE.md")" = '@AGENTS.md' ] ||
+  fail 'link did not bridge CLAUDE.md to AGENTS.md'
+assert_contains "$LINK_DIR/.gemini/settings.json" 'AGENTS.md'
+run_agent link "$LINK_DIR" >"$TEST_ROOT/link-again.out"
+assert_contains "$TEST_ROOT/link-again.out" 'already imports'
+printf 'custom claude-only extras\n' >"$LINK_DIR/CLAUDE.md"
+run_agent link "$LINK_DIR" >"$TEST_ROOT/link-custom.out"
+assert_contains "$LINK_DIR/CLAUDE.md" 'custom claude-only extras'
+assert_contains "$TEST_ROOT/link-custom.out" 'left untouched'
 
 cp "$CANON" "$TEST_ROOT/idempotent.md"
 run_agent sync >/dev/null
