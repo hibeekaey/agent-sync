@@ -35,6 +35,18 @@ AGENT_SYNC_HOME=/tmp/scratch-agents \
   bin/agent sync --synthesizer deterministic
 ```
 
+## Releases
+
+Tagging `vX.Y.Z` runs the release workflow: it attaches the checksummed
+binary plus `SHA256SUMS` and bumps the Homebrew formula. Nothing is
+published by hand.
+
+The bundled skill rides the same release tags: `gh skill install` resolves
+`--pin vX.Y.Z` against them directly, so the skill needs no release of its
+own and no second version line. CI validates it on every pull request with
+`gh skill publish --dry-run`; the repository's `agent-skills` topic is what
+makes it discoverable.
+
 ## Pull requests
 
 - Keep PRs small and focused; one behavior change per PR.
