@@ -12,8 +12,9 @@ TEST_TMPDIR="$TEST_ROOT/tmp"
 MOCK_BIN="$TEST_ROOT/mock-bin"
 SYNTH_LOG="$TEST_ROOT/synthesizer.log"
 
+# KEEP_TEST_ROOT=1 preserves the fixture for post-mortem debugging.
 cleanup() {
-  rm -rf "$TEST_ROOT"
+  [ -n "${KEEP_TEST_ROOT:-}" ] || rm -rf "$TEST_ROOT"
 }
 
 trap cleanup 0
@@ -236,9 +237,15 @@ cmp -s "$LINK_DIR/AGENTS.md" "$TEST_ROOT/link-import-once.md" ||
   fail 'link --import is not idempotent'
 
 # Per-agent targeting: --skip filters a target; AGENT_SYNC_ONLY narrows to one.
+# The env assignment lives in a subshell: `VAR=x shell_function` assignments
+# persist in POSIX sh and would leak into every later test.
 run_agent sync --skip qwen >"$TEST_ROOT/skip.out"
 assert_contains "$TEST_ROOT/skip.out" 'qwen: skipped (filtered)'
-AGENT_SYNC_ONLY=codex run_agent sync >"$TEST_ROOT/only.out"
+(
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  run_agent sync >"$TEST_ROOT/only.out"
+)
 assert_contains "$TEST_ROOT/only.out" 'codex: synced'
 assert_contains "$TEST_ROOT/only.out" 'gemini: skipped (filtered)'
 run_agent sync >/dev/null
@@ -258,6 +265,61 @@ assert_not_contains "$CANON" 'Always write regression tests.'
 assert_not_contains "$CANON" 'imported:pack:testpack'
 [ ! -d "$PACK_STATE/packs/testpack" ] || fail 'pack remove left the pack directory'
 run_agent sync >/dev/null
+
+# MCP: register stdio + remote servers, push via mocked CLIs, write owned files.
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "claude %s\\n" "$*" >>"$SYNTH_LOG"' >"$MOCK_BIN/claude"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "codex %s\\n" "$*" >>"$SYNTH_LOG"' >"$MOCK_BIN/codex"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "gemini %s\\n" "$*" >>"$SYNTH_LOG"' >"$MOCK_BIN/gemini"
+chmod +x "$MOCK_BIN/claude" "$MOCK_BIN/codex" "$MOCK_BIN/gemini"
+run_agent mcp add fetcher --env API_KEY=secret -- uvx mcp-server-fetch --strict >/dev/null
+run_agent mcp add linear --url https://mcp.linear.app/sse --header 'Authorization: Bearer tok' >/dev/null
+run_agent mcp list >"$TEST_ROOT/mcp-list.out"
+assert_contains "$TEST_ROOT/mcp-list.out" 'fetcher: stdio uvx'
+assert_contains "$TEST_ROOT/mcp-list.out" 'linear: http https://mcp.linear.app/sse'
+: >"$SYNTH_LOG"
+PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync >"$TEST_ROOT/mcp-sync.out"
+assert_contains "$SYNTH_LOG" 'claude mcp add-json fetcher'
+assert_contains "$SYNTH_LOG" '"env": {"API_KEY": "secret"}'
+assert_contains "$SYNTH_LOG" 'codex mcp add fetcher --env API_KEY=secret -- uvx mcp-server-fetch --strict'
+assert_contains "$SYNTH_LOG" 'codex mcp add linear --url https://mcp.linear.app/sse'
+assert_contains "$SYNTH_LOG" 'gemini mcp add -s user -e API_KEY=secret fetcher uvx mcp-server-fetch --strict'
+assert_contains "$SYNTH_LOG" 'gemini mcp add -s user --transport http --header Authorization: Bearer tok linear https://mcp.linear.app/sse'
+assert_contains "$AGENT_CONFIG_ROOT/.cursor/mcp.json" '"type": "stdio", "command": "uvx"'
+assert_contains "$AGENT_CONFIG_ROOT/.cursor/mcp.json" '"url": "https://mcp.linear.app/sse"'
+assert_contains "$AGENT_CONFIG_ROOT/.codeium/windsurf/mcp_config.json" '"serverUrl": "https://mcp.linear.app/sse"'
+assert_contains "$AGENT_CONFIG_ROOT/.kiro/settings/mcp.json" '"command": "uvx"'
+assert_not_contains "$AGENT_CONFIG_ROOT/.kiro/settings/mcp.json" 'linear'
+# A pre-existing non-owned MCP file is never rewritten.
+printf '{"mcpServers": {"mine": {"command": "keepme"}}}\n' >"$AGENT_CONFIG_ROOT/.cursor/mcp.json"
+rm -f "$PACK_STATE/mcp-owned"
+PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync >"$TEST_ROOT/mcp-sync2.out"
+assert_contains "$AGENT_CONFIG_ROOT/.cursor/mcp.json" 'keepme'
+assert_contains "$TEST_ROOT/mcp-sync2.out" 'not agent-sync managed'
+run_agent mcp remove fetcher >/dev/null
+run_agent mcp remove linear >/dev/null
+rm -f "$MOCK_BIN/claude" "$MOCK_BIN/codex" "$MOCK_BIN/gemini"
+
+# Skills: mirror the canonical skills dir into every detected agent.
+mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/test-skill"
+printf -- '---\nname: test-skill\n---\nbody\n' >"$AGENT_CONFIG_ROOT/.claude/skills/test-skill/SKILL.md"
+run_agent skills sync >"$TEST_ROOT/skills.out"
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/test-skill/SKILL.md" 'name: test-skill'
+assert_contains "$AGENT_CONFIG_ROOT/.qwen/skills/test-skill/SKILL.md" 'name: test-skill'
+assert_contains "$AGENT_CONFIG_ROOT/.agents/skills/test-skill/SKILL.md" 'name: test-skill'
+assert_contains "$TEST_ROOT/skills.out" 'roo: 1 skill(s)'
+
+# Hooks: recipes print and mention the right events.
+run_agent hooks >"$TEST_ROOT/hooks.out"
+assert_contains "$TEST_ROOT/hooks.out" 'SessionEnd'
+assert_contains "$TEST_ROOT/hooks.out" 'session.idle'
+run_agent hooks codex >"$TEST_ROOT/hooks-codex.out"
+assert_contains "$TEST_ROOT/hooks-codex.out" 'Stop'
 
 cp "$CANON" "$TEST_ROOT/idempotent.md"
 run_agent sync >/dev/null
