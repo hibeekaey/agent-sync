@@ -16,11 +16,12 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.3.1"
+VERSION="1.4.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
 TAB=$(printf '\t')
+DRY_RUN=0
 PRIVATE_TMP=""
 CANON_TMP=""
 APPLY_TMP=""
@@ -55,25 +56,35 @@ usage() {
 agent v$VERSION: synchronize agent memory across AI coding agents
 
 Usage:
-  agent sync [--synthesizer MODE]
+  agent sync [--synthesizer MODE] [--dry-run]
                          gather every agent's memory stores, synthesize them,
                          and redistribute to all installed agents
   agent status           per-agent parity check (exit 1 if anything is stale)
+  agent diff             show stale targets as unified diffs (exit 1 if any)
   agent targets          list sync targets and whether each tool is installed
+  agent doctor           diagnose the setup and report problems
   agent migrate AGENT    fold just one agent's memory stores in, then
                          redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
                          (default: ./agent-memories) for editing and review
-  agent apply [DIR] [--synthesizer MODE]
+  agent apply [DIR] [--synthesizer MODE] [--dry-run]
                          push edited staged files from a gather DIR back to
                          their original stores, then run the full sync
+  agent link [DIR]       make one project-scope AGENTS.md readable by every
+                         agent in a repository (default: current directory)
+  agent revert           restore targets from their .orig adoption backups
+                         and the synthesized file from its .bak
   agent help             this text
 
 The edit loop: agent gather, edit the staged files, agent apply. Your edits
 land in the original stores, get folded into the synthesized file, and are
 redistributed to every agent.
 
-Agents with readable memory stores: claude, codex, cursor, continue, windsurf.
+The first time sync overwrites a pre-existing file agent-sync did not write,
+the original is kept beside it as <file>.orig; agent revert restores them.
+
+Agents with readable memory stores: claude, codex, cursor, continue,
+windsurf, goose.
 
 Synthesized memory file: $SRC (override with AGENT_SYNC_SOURCE)
 Agent configuration root: $AGENT_HOME (override with AGENT_SYNC_HOME)
@@ -100,6 +111,16 @@ qwen|$AGENT_HOME/.qwen|$AGENT_HOME/.qwen/QWEN.md|copy
 continue|$AGENT_HOME/.continue|$AGENT_HOME/.continue/rules/best-practices.md|copy
 windsurf|$AGENT_HOME/.codeium|$AGENT_HOME/.codeium/windsurf/memories/global_rules.md|copy
 cursor|$AGENT_HOME/.cursor|$AGENT_HOME/.cursor/rules/best-practices.mdc|cursor
+opencode|$AGENT_HOME/.config/opencode|$AGENT_HOME/.config/opencode/AGENTS.md|copy
+amp|$AGENT_HOME/.config/amp|$AGENT_HOME/.config/amp/AGENTS.md|copy
+goose|$AGENT_HOME/.config/goose|$AGENT_HOME/.config/goose/.goosehints|copy
+copilot|$AGENT_HOME/.copilot|$AGENT_HOME/.copilot/copilot-instructions.md|copy
+zed|$AGENT_HOME/.config/zed|$AGENT_HOME/.config/zed/AGENTS.md|copy
+junie|$AGENT_HOME/.junie|$AGENT_HOME/.junie/AGENTS.md|copy
+kiro|$AGENT_HOME/.kiro|$AGENT_HOME/.kiro/steering/agent-sync.md|copy
+crush|$AGENT_HOME/.config/crush|$AGENT_HOME/.config/crush/CRUSH.md|copy
+roo|$AGENT_HOME/.roo|$AGENT_HOME/.roo/rules/agent-sync.md|copy
+cline|$AGENT_HOME/Documents/Cline|$AGENT_HOME/Documents/Cline/Rules/agent-sync.md|copy
 EOF
 }
 
@@ -164,8 +185,15 @@ sources_for() {
         echo "$f"
       done
       ;;
+    goose)
+      # Goose's Memory extension stores plain text files, one per category.
+      for f in "$AGENT_HOME"/.config/goose/memory/*.md "$AGENT_HOME"/.config/goose/memory/*.txt; do
+        [ -f "$f" ] || continue
+        [ "$f" = "$SRC" ] || echo "$f"
+      done
+      ;;
     *)
-      echo "agent: unknown agent: $1 (try: claude, codex, cursor, continue, windsurf)" >&2
+      echo "agent: unknown agent: $1 (try: claude, codex, cursor, continue, windsurf, goose)" >&2
       return 2
       ;;
   esac
@@ -205,6 +233,14 @@ import_into_canon() {
   has_section=0
   grep -qxF "$begin" "$SRC" && has_section=1
   if [ "$has_section" -eq 0 ] && [ "$found" -eq 0 ]; then
+    return
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    if [ "$found" -gt 0 ]; then
+      echo "dry-run: would refresh section imported:$from in $SRC"
+    else
+      echo "dry-run: would remove section imported:$from from $SRC"
+    fi
     return
   fi
   CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
@@ -282,6 +318,9 @@ parse_synthesizer_args() {
         SYNTHESIZER_REQUEST=${1#*=}
         SYNTHESIZER_FROM_CLI=1
         ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
       *)
         echo "agent: unknown sync option: $1" >&2
         return 2
@@ -354,6 +393,10 @@ accept_synth_output() {
 }
 
 synthesize() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "dry-run: would synthesize (mode: $SYNTHESIZER_REQUEST)"
+    return
+  fi
   if [ "$SYNTHESIZER_REQUEST" = "deterministic" ]; then
     echo "synthesis: deterministic merge"
     return
@@ -418,6 +461,10 @@ distribute() {
       echo "$name: skipped (not installed)"
       continue
     fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "$name: would sync -> $dest"
+      continue
+    fi
     mkdir -p "$(dirname "$dest")"
     TARGET_TMP=$(mktemp "$(dirname "$dest")/.agent-sync-target.XXXXXXXX") || {
       echo "agent: could not create a temporary file beside $dest" >&2
@@ -427,6 +474,13 @@ distribute() {
       copy) cp "$SRC" "$TARGET_TMP" ;;
       cursor) cursor_render >"$TARGET_TMP" ;;
     esac
+    # Adopt safety: before the first overwrite of a differing pre-existing
+    # file, keep the original beside it. agent revert restores it.
+    if [ -f "$dest" ] && [ ! -f "$dest.orig" ] &&
+      [ "$(sum "$dest")" != "$(sum "$TARGET_TMP")" ]; then
+      cp "$dest" "$dest.orig"
+      echo "$name: pre-existing file preserved at $dest.orig"
+    fi
     mv "$TARGET_TMP" "$dest"
     TARGET_TMP=""
     echo "$name: synced -> $dest"
@@ -439,10 +493,10 @@ cmd_sync() {
   parse_synthesizer_args "$@"
   require_src
   require_selected_synthesizer
-  for name in claude codex cursor continue windsurf; do
+  for name in claude codex cursor continue windsurf goose; do
     validate_import_section "$name"
   done
-  for name in claude codex cursor continue windsurf; do
+  for name in claude codex cursor continue windsurf goose; do
     import_agent "$name"
     n="$IMPORTED_COUNT"
     [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
@@ -504,7 +558,7 @@ EOF
 cmd_migrate() {
   from="${1:-}"
   if [ -z "$from" ]; then
-    echo "usage: agent migrate <claude|codex|cursor|continue|windsurf>" >&2
+    echo "usage: agent migrate <claude|codex|cursor|continue|windsurf|goose>" >&2
     exit 2
   fi
   require_src
@@ -532,7 +586,7 @@ cmd_gather() {
   gathered=0
   ensure_private_tmp
   list="$PRIVATE_TMP/gather-list"
-  for name in claude codex cursor continue windsurf; do
+  for name in claude codex cursor continue windsurf goose; do
     sources_for "$name" >"$list"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -568,7 +622,9 @@ is_memory_store_path() {
       "$AGENT_HOME"/.cursor/rules/*.mdc | \
       "$AGENT_HOME"/.cursor/rules/*.md | \
       "$AGENT_HOME"/.continue/rules/*.md | \
-      "$AGENT_HOME"/.codeium/windsurf/memories/*.md) return 0 ;;
+      "$AGENT_HOME"/.codeium/windsurf/memories/*.md | \
+      "$AGENT_HOME"/.config/goose/memory/*.md | \
+      "$AGENT_HOME"/.config/goose/memory/*.txt) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -596,7 +652,7 @@ validate_manifest() {
 cmd_apply() {
   dir="./agent-memories"
   case "${1:-}" in
-    "" | --synthesizer | --synthesizer=*) ;;
+    "" | --synthesizer | --synthesizer=* | --dry-run) ;;
     --*)
       echo "agent: unknown apply option: $1" >&2
       return 2
@@ -628,6 +684,11 @@ cmd_apply() {
     s="$dir/$staged"
     [ -f "$s" ] || continue
     if [ ! -f "$orig" ] || [ "$(sum "$s")" != "$(sum "$orig")" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "dry-run: would update store: $orig"
+        updated=$((updated + 1))
+        continue
+      fi
       mkdir -p "$(dirname "$orig")"
       APPLY_TMP=$(mktemp "$(dirname "$orig")/.agent-sync-apply.XXXXXXXX") || {
         echo "agent: could not create a temporary file beside $orig" >&2
@@ -644,12 +705,179 @@ cmd_apply() {
   cmd_sync "$@"
 }
 
+# Show exactly what is stale, as unified diffs. Exits 1 when anything is
+# stale, so it doubles as a CI drift gate.
+cmd_diff() {
+  require_src
+  stale=0
+  ensure_private_tmp
+  while IFS='|' read -r name dir dest mode; do
+    [ -d "$dir" ] || continue
+    expected="$SRC"
+    if [ "$mode" = "cursor" ]; then
+      cursor_render >"$PRIVATE_TMP/diff-expected"
+      expected="$PRIVATE_TMP/diff-expected"
+    fi
+    if [ ! -f "$dest" ]; then
+      echo "=== $name: $dest is missing"
+      stale=$((stale + 1))
+      continue
+    fi
+    if ! cmp -s "$dest" "$expected"; then
+      echo "=== $name: $dest"
+      diff -u "$dest" "$expected" || true
+      stale=$((stale + 1))
+    fi
+  done <<EOF
+$(targets)
+EOF
+  if [ "$stale" -eq 0 ]; then
+    echo "all targets in sync"
+  else
+    echo "$stale stale target(s); run: agent sync"
+    exit 1
+  fi
+}
+
+# Undo: restore every target from its .orig adoption backup and the
+# synthesized file from its last synthesis backup.
+cmd_revert() {
+  restored=0
+  while IFS='|' read -r name dir dest mode; do
+    [ -f "$dest.orig" ] || continue
+    mv "$dest.orig" "$dest"
+    echo "$name: restored $dest from its .orig backup"
+    restored=$((restored + 1))
+  done <<EOF
+$(targets)
+EOF
+  if [ -f "$SRC.bak" ]; then
+    cp "$SRC.bak" "$SRC"
+    echo "synthesized file restored from $SRC.bak"
+    restored=$((restored + 1))
+  fi
+  [ "$restored" -gt 0 ] || echo "nothing to revert (no .orig or .bak files found)"
+}
+
+# Diagnose the setup: file present, markers well-formed, targets detected,
+# synthesis available, staleness.
+cmd_doctor() {
+  problems=0
+  # Pre-create the private tmp: the status probe below runs in a subshell,
+  # which resets the EXIT trap, so it must not be the one to create it.
+  ensure_private_tmp
+  echo "agent v$VERSION"
+  echo "synthesized file: $SRC"
+  if [ -f "$SRC" ]; then
+    echo "ok: synthesized file exists ($(wc -l <"$SRC" | tr -d ' ') lines)"
+    for name in claude codex cursor continue windsurf goose; do
+      if ! validate_import_section "$name" 2>/dev/null; then
+        echo "PROBLEM: malformed import markers for $name in $SRC"
+        problems=$((problems + 1))
+      fi
+    done
+  else
+    echo "PROBLEM: synthesized file is missing; create it, then run agent sync"
+    problems=$((problems + 1))
+  fi
+  installed=0
+  while IFS='|' read -r name dir dest mode; do
+    [ -d "$dir" ] && installed=$((installed + 1))
+  done <<EOF
+$(targets)
+EOF
+  if [ "$installed" -gt 0 ]; then
+    echo "ok: $installed sync target(s) detected (agent targets lists them)"
+  else
+    echo "PROBLEM: no agents detected under $AGENT_HOME"
+    problems=$((problems + 1))
+  fi
+  for cli in claude codex; do
+    if command -v "$cli" >/dev/null 2>&1; then
+      echo "ok: $cli CLI available for semantic synthesis"
+    else
+      echo "note: $cli CLI not installed (auto synthesis skips it)"
+    fi
+  done
+  [ -f "$SRC.bak" ] && echo "note: last synthesis backup at $SRC.bak"
+  if [ -f "$SRC" ] && ! (cmd_status) >/dev/null 2>&1; then
+    echo "PROBLEM: targets are stale (agent diff shows details; agent sync fixes)"
+    problems=$((problems + 1))
+  fi
+  if [ "$problems" -eq 0 ]; then
+    echo "doctor: no problems found"
+  else
+    echo "doctor: $problems problem(s) found"
+    exit 1
+  fi
+}
+
+# Project scope: make one repo-root AGENTS.md readable by every agent.
+# AGENTS.md is read natively by Codex, Cursor, Copilot, Zed, Amp, OpenCode,
+# Junie, Goose, Jules and others; Claude Code needs an @AGENTS.md import
+# stub; Gemini CLI needs context.fileName in .gemini/settings.json.
+cmd_link() {
+  dir="${1:-.}"
+  if [ ! -d "$dir" ]; then
+    echo "agent: not a directory: $dir" >&2
+    exit 2
+  fi
+  agents_md="$dir/AGENTS.md"
+  claude_md="$dir/CLAUDE.md"
+  stub='@AGENTS.md'
+  if [ ! -f "$agents_md" ]; then
+    if [ -f "$claude_md" ]; then
+      cp "$claude_md" "$agents_md"
+      echo "link: seeded AGENTS.md from the existing CLAUDE.md"
+    else
+      printf '# Project instructions\n\nShared instructions for every AI coding agent working in this repository.\n' >"$agents_md"
+      echo "link: created a starter AGENTS.md"
+    fi
+  fi
+  if [ ! -f "$claude_md" ]; then
+    printf '%s\n' "$stub" >"$claude_md"
+    echo "link: created CLAUDE.md stub importing AGENTS.md"
+  elif [ "$(head -1 "$claude_md")" = "$stub" ]; then
+    echo "link: CLAUDE.md already imports AGENTS.md"
+  elif cmp -s "$claude_md" "$agents_md"; then
+    printf '%s\n' "$stub" >"$claude_md"
+    echo "link: CLAUDE.md now imports AGENTS.md (content was identical)"
+  else
+    echo "link: CLAUDE.md has its own content; left untouched (put $stub on its first line to bridge it)"
+  fi
+  gemini_settings="$dir/.gemini/settings.json"
+  if [ -f "$gemini_settings" ]; then
+    if grep -q 'AGENTS\.md' "$gemini_settings"; then
+      echo "link: Gemini CLI already configured for AGENTS.md"
+    else
+      echo "link: $gemini_settings exists; add {\"context\":{\"fileName\":[\"AGENTS.md\",\"GEMINI.md\"]}} yourself (not overwriting your settings)"
+    fi
+  else
+    mkdir -p "$dir/.gemini"
+    printf '{\n  "context": { "fileName": ["AGENTS.md", "GEMINI.md"] }\n}\n' >"$gemini_settings"
+    echo "link: created .gemini/settings.json so Gemini CLI reads AGENTS.md"
+  fi
+  for shadow in .rules .cursorrules .windsurfrules .clinerules .github/copilot-instructions.md AGENT.md; do
+    if [ -e "$dir/$shadow" ]; then
+      echo "link: note: $shadow shadows AGENTS.md in Zed (first-match order)"
+    fi
+  done
+  echo "link: done; AGENTS.md is the single project instructions file"
+}
+
 case "${1:-help}" in
   sync)
     shift
     cmd_sync "$@"
     ;;
   status) cmd_status ;;
+  diff) cmd_diff ;;
+  doctor) cmd_doctor ;;
+  revert) cmd_revert ;;
+  link)
+    shift
+    cmd_link "$@"
+    ;;
   targets) cmd_targets ;;
   migrate)
     shift

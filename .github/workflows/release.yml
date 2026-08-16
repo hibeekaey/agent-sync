@@ -1,0 +1,24 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build checksummed assets
+        run: |
+          cp bin/agent agent
+          sha256sum agent > SHA256SUMS
+      - name: attach to the release
+        run: |
+          gh release upload "$GITHUB_REF_NAME" agent SHA256SUMS --clobber ||
+            gh release create "$GITHUB_REF_NAME" agent SHA256SUMS --generate-notes
