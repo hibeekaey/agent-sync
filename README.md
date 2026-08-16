@@ -45,7 +45,9 @@ After a sync, every agent knows what every agent has learned.
 
 The edit loop: `agent gather`, edit the staged files in one place, `agent
 apply`. Your edits land back in each agent's own store, get folded into the
-synthesized file, and are redistributed to every agent.
+synthesized file, and are redistributed to every agent. Before writing,
+`apply` validates every manifest entry against the supported memory-store
+paths and rejects path traversal and symbolic-link staging entries.
 
 ## Install
 
@@ -150,10 +152,12 @@ To install a specific release, add `--pin <tag>`. Without `gh`, copying
 
 ## Notes
 
-- Memory files can contain private context. Keep the synthesized file and
-  anything `gather` produces out of public repositories.
-- `AGENT_SYNC_SOURCE` overrides the synthesized file location.
-- `agent help` for the full usage text.
+| Item | Note |
+| --- | --- |
+| Privacy | Memory files can contain private context. Keep the synthesized file and gathered output out of public repositories. |
+| Synthesized source | `AGENT_SYNC_SOURCE` overrides its location. When it lives elsewhere, sync redistributes it to Claude too. |
+| Configuration root | `AGENT_SYNC_HOME` overrides it, primarily for isolated testing. |
+| Full usage | Run `agent help`. |
 
 ## Contributing
 

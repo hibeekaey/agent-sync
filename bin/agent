@@ -9,15 +9,44 @@
 # global instructions slot. Parity means every agent knows what every agent
 # has learned.
 set -eu
+umask 077
 
 # A synthesizer-spawned agent must never re-enter agent-sync.
 if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.2.0"
-SRC="${AGENT_SYNC_SOURCE:-$HOME/.claude/CLAUDE.md}"
+VERSION="1.2.1"
+AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
+DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
+SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
 TAB=$(printf '\t')
+PRIVATE_TMP=""
+CANON_TMP=""
+APPLY_TMP=""
+MANIFEST_TMP=""
+TARGET_TMP=""
+IMPORTED_COUNT=0
+
+cleanup() {
+  [ -z "$CANON_TMP" ] || rm -f "$CANON_TMP"
+  [ -z "$APPLY_TMP" ] || rm -f "$APPLY_TMP"
+  [ -z "$MANIFEST_TMP" ] || rm -f "$MANIFEST_TMP"
+  [ -z "$TARGET_TMP" ] || rm -f "$TARGET_TMP"
+  [ -z "$PRIVATE_TMP" ] || rm -rf "$PRIVATE_TMP"
+}
+
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+ensure_private_tmp() {
+  if [ -z "$PRIVATE_TMP" ]; then
+    PRIVATE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agent-sync.XXXXXXXX") || {
+      echo "agent: could not create a private temporary directory" >&2
+      exit 1
+    }
+  fi
+}
 
 usage() {
   cat <<EOF
@@ -44,6 +73,7 @@ redistributed to every agent.
 Agents with readable memory stores: claude, codex, cursor, continue, windsurf.
 
 Synthesized memory file: $SRC (override with AGENT_SYNC_SOURCE)
+Agent configuration root: $AGENT_HOME (override with AGENT_SYNC_HOME)
 Semantic merging: set AGENT_SYNC_SYNTHESIZER to a command that reads a merge
 prompt on stdin and prints the merged document on stdout, for example:
   AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
@@ -57,13 +87,16 @@ EOF
 
 # name|detect dir|destination|mode
 targets() {
+  if [ "$SRC" != "$DEFAULT_SRC" ]; then
+    printf 'claude|%s|%s|copy\n' "$AGENT_HOME/.claude" "$DEFAULT_SRC"
+  fi
   cat <<EOF
-codex|$HOME/.codex|$HOME/.codex/AGENTS.md|copy
-gemini|$HOME/.gemini|$HOME/.gemini/GEMINI.md|copy
-qwen|$HOME/.qwen|$HOME/.qwen/QWEN.md|copy
-continue|$HOME/.continue|$HOME/.continue/rules/best-practices.md|copy
-windsurf|$HOME/.codeium|$HOME/.codeium/windsurf/memories/global_rules.md|copy
-cursor|$HOME/.cursor|$HOME/.cursor/rules/best-practices.mdc|cursor
+codex|$AGENT_HOME/.codex|$AGENT_HOME/.codex/AGENTS.md|copy
+gemini|$AGENT_HOME/.gemini|$AGENT_HOME/.gemini/GEMINI.md|copy
+qwen|$AGENT_HOME/.qwen|$AGENT_HOME/.qwen/QWEN.md|copy
+continue|$AGENT_HOME/.continue|$AGENT_HOME/.continue/rules/best-practices.md|copy
+windsurf|$AGENT_HOME/.codeium|$AGENT_HOME/.codeium/windsurf/memories/global_rules.md|copy
+cursor|$AGENT_HOME/.cursor|$AGENT_HOME/.cursor/rules/best-practices.mdc|cursor
 EOF
 }
 
@@ -91,34 +124,39 @@ require_src() {
 sources_for() {
   case "$1" in
     claude)
-      for f in "$HOME"/.claude/projects/*/memory/*.md; do
+      for f in "$AGENT_HOME"/.claude/projects/*/memory/*.md; do
         [ -f "$f" ] || continue
+        [ "$f" = "$SRC" ] && continue
         case "$(basename "$f")" in MEMORY.md) continue ;; esac
         echo "$f"
       done
       ;;
     codex)
-      for f in "$HOME"/.codex/memories/*.md; do
-        [ -f "$f" ] && echo "$f"
+      for f in "$AGENT_HOME"/.codex/memories/*.md; do
+        [ -f "$f" ] || continue
+        [ "$f" = "$SRC" ] || echo "$f"
       done
       ;;
     cursor)
-      for f in "$HOME"/.cursor/rules/*.mdc "$HOME"/.cursor/rules/*.md; do
+      for f in "$AGENT_HOME"/.cursor/rules/*.mdc "$AGENT_HOME"/.cursor/rules/*.md; do
         [ -f "$f" ] || continue
+        [ "$f" = "$SRC" ] && continue
         case "$(basename "$f")" in best-practices.mdc | best-practices.md) continue ;; esac
         echo "$f"
       done
       ;;
     continue)
-      for f in "$HOME"/.continue/rules/*.md; do
+      for f in "$AGENT_HOME"/.continue/rules/*.md; do
         [ -f "$f" ] || continue
+        [ "$f" = "$SRC" ] && continue
         case "$(basename "$f")" in best-practices.md) continue ;; esac
         echo "$f"
       done
       ;;
     windsurf)
-      for f in "$HOME"/.codeium/windsurf/memories/*.md; do
+      for f in "$AGENT_HOME"/.codeium/windsurf/memories/*.md; do
         [ -f "$f" ] || continue
+        [ "$f" = "$SRC" ] && continue
         case "$(basename "$f")" in global_rules.md) continue ;; esac
         echo "$f"
       done
@@ -133,35 +171,73 @@ sources_for() {
 # Replace (or append) the marker-delimited import section for one agent
 # inside the synthesized file. Deterministic: unchanged stores produce a
 # byte-identical document.
+validate_import_section() {
+  from="$1"
+  begin="<!-- agent-sync:begin imported:$from -->"
+  end="<!-- agent-sync:end imported:$from -->"
+  if ! awk -v b="$begin" -v e="$end" '
+    $0 == b {
+      begins++
+      if (open || begins > 1 || ends > 0) bad = 1
+      open = 1
+    }
+    $0 == e {
+      ends++
+      if (!open || ends > 1) bad = 1
+      open = 0
+    }
+    END { if (bad || open || begins != ends) exit 1 }
+  ' "$SRC"; then
+    echo "agent: malformed import markers for $from in $SRC; refusing to modify it" >&2
+    return 1
+  fi
+}
+
 import_into_canon() {
   from="$1"
   content="$2"
+  found="$3"
   begin="<!-- agent-sync:begin imported:$from -->"
   end="<!-- agent-sync:end imported:$from -->"
-  tmp="$SRC.tmp.$$"
-  if grep -qF "$begin" "$SRC"; then
+  has_section=0
+  grep -qxF "$begin" "$SRC" && has_section=1
+  if [ "$has_section" -eq 0 ] && [ "$found" -eq 0 ]; then
+    return
+  fi
+  CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
+    echo "agent: could not create a temporary file beside $SRC" >&2
+    exit 1
+  }
+  if [ "$has_section" -eq 1 ] && [ "$found" -gt 0 ]; then
     awk -v b="$begin" -v e="$end" -v f="$content" '
       $0 == b { print; while ((getline line < f) > 0) print line; skip = 1; next }
       $0 == e { skip = 0; print; next }
       !skip { print }
-    ' "$SRC" >"$tmp"
+    ' "$SRC" >"$CANON_TMP"
+  elif [ "$has_section" -eq 1 ]; then
+    awk -v b="$begin" -v e="$end" '
+      $0 == b { skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip { print }
+    ' "$SRC" >"$CANON_TMP"
   else
     {
       cat "$SRC"
       printf '\n%s\n' "$begin"
       cat "$content"
       printf '%s\n' "$end"
-    } >"$tmp"
+    } >"$CANON_TMP"
   fi
-  mv "$tmp" "$SRC"
+  mv "$CANON_TMP" "$SRC"
+  CANON_TMP=""
 }
 
 # Fold one agent's memory stores into the synthesized file.
-# Prints the number of files folded.
 import_agent() {
   from="$1"
-  content="${TMPDIR:-/tmp}/agent-import.$$"
-  list="${TMPDIR:-/tmp}/agent-import-list.$$"
+  ensure_private_tmp
+  content="$PRIVATE_TMP/import-$from"
+  list="$PRIVATE_TMP/import-list-$from"
   {
     echo "## Memories imported from $from"
     echo
@@ -177,22 +253,20 @@ import_agent() {
       echo "### $f"
       echo
       cat "$f"
+      printf '\n'
     } >>"$content"
     found=$((found + 1))
   done <"$list"
-  rm -f "$list"
-  if [ "$found" -gt 0 ]; then
-    import_into_canon "$from" "$content"
-  fi
-  rm -f "$content"
-  echo "$found"
+  import_into_canon "$from" "$content" "$found"
+  IMPORTED_COUNT="$found"
 }
 
 # Optional semantic merge: the synthesizer command reads a prompt on stdin
 # and must print the complete merged markdown document on stdout.
 synthesize() {
-  prompt="${TMPDIR:-/tmp}/agent-synth-prompt.$$"
-  out="${TMPDIR:-/tmp}/agent-synth-out.$$"
+  ensure_private_tmp
+  prompt="$PRIVATE_TMP/synth-prompt"
+  out="$PRIVATE_TMP/synth-out"
   {
     cat <<'EOF'
 You are the memory synthesizer for agent-sync. Below is the synthesized
@@ -214,10 +288,8 @@ EOF
     mv "$out" "$SRC"
     echo "synthesized via: $AGENT_SYNC_SYNTHESIZER (previous file at $SRC.bak)"
   else
-    rm -f "$out"
     echo "agent: synthesizer failed or printed a non-document; keeping the mechanical merge" >&2
   fi
-  rm -f "$prompt"
 }
 
 distribute() {
@@ -227,13 +299,16 @@ distribute() {
       continue
     fi
     mkdir -p "$(dirname "$dest")"
+    TARGET_TMP=$(mktemp "$(dirname "$dest")/.agent-sync-target.XXXXXXXX") || {
+      echo "agent: could not create a temporary file beside $dest" >&2
+      exit 1
+    }
     case "$mode" in
-      copy) cp "$SRC" "$dest" ;;
-      cursor)
-        tmp="$dest.tmp.$$"
-        cursor_render >"$tmp" && mv "$tmp" "$dest"
-        ;;
+      copy) cp "$SRC" "$TARGET_TMP" ;;
+      cursor) cursor_render >"$TARGET_TMP" ;;
     esac
+    mv "$TARGET_TMP" "$dest"
+    TARGET_TMP=""
     echo "$name: synced -> $dest"
   done <<EOF
 $(targets)
@@ -243,7 +318,11 @@ EOF
 cmd_sync() {
   require_src
   for name in claude codex cursor continue windsurf; do
-    n=$(import_agent "$name")
+    validate_import_section "$name"
+  done
+  for name in claude codex cursor continue windsurf; do
+    import_agent "$name"
+    n="$IMPORTED_COUNT"
     [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
   done
   if [ -n "${AGENT_SYNC_SYNTHESIZER:-}" ]; then
@@ -269,10 +348,10 @@ cmd_status() {
     case "$mode" in
       copy) want="$src_sum" ;;
       cursor)
-        tmp="${TMPDIR:-/tmp}/agent-cursor-expected.$$"
+        ensure_private_tmp
+        tmp="$PRIVATE_TMP/cursor-expected"
         cursor_render >"$tmp"
         want=$(sum "$tmp")
-        rm -f "$tmp"
         ;;
     esac
     if [ "$(sum "$dest")" = "$want" ]; then
@@ -309,9 +388,12 @@ cmd_migrate() {
     exit 2
   fi
   require_src
-  n=$(import_agent "$from")
+  validate_import_section "$from"
+  import_agent "$from"
+  n="$IMPORTED_COUNT"
   if [ "$n" -eq 0 ]; then
     echo "agent: no readable memory stores found for $from" >&2
+    distribute
     exit 1
   fi
   echo "$from: folded $n memory file(s) into $SRC"
@@ -321,12 +403,15 @@ cmd_migrate() {
 cmd_gather() {
   dest="${1:-./agent-memories}"
   mkdir -p "$dest"
-  # The manifest maps each staged name to its source path so `apply` can
-  # push edits back exactly where they came from.
+  # The manifest is written atomically because `apply` treats it as authority.
   manifest="$dest/.agent-manifest"
-  : >"$manifest"
+  MANIFEST_TMP=$(mktemp "$dest/.agent-manifest.XXXXXXXX") || {
+    echo "agent: could not create a temporary manifest in $dest" >&2
+    exit 1
+  }
   gathered=0
-  list="${TMPDIR:-/tmp}/agent-gather-list.$$"
+  ensure_private_tmp
+  list="$PRIVATE_TMP/gather-list"
   for name in claude codex cursor continue windsurf; do
     sources_for "$name" >"$list"
     while IFS= read -r f; do
@@ -338,14 +423,54 @@ cmd_gather() {
         staged="${n}__$staged"
       fi
       cp "$f" "$dest/$staged"
-      printf '%s\t%s\n' "$staged" "$f" >>"$manifest"
+      printf '%s\t%s\n' "$staged" "$f" >>"$MANIFEST_TMP"
       gathered=$((gathered + 1))
     done <"$list"
   done
-  rm -f "$list"
+  mv "$MANIFEST_TMP" "$manifest"
+  MANIFEST_TMP=""
   echo "gathered $gathered memory file(s) into $dest"
   echo "edit the staged files, then push edits everywhere with: agent apply $dest"
   echo "note: gathered files can contain private context; do not commit them"
+}
+
+is_memory_store_path() {
+  path="$1"
+  [ "$path" = "$SRC" ] && return 1
+  case "$path" in
+    */../* | */./* | */.. | */.) return 1 ;;
+    "$AGENT_HOME/.cursor/rules/best-practices.mdc" | \
+      "$AGENT_HOME/.cursor/rules/best-practices.md" | \
+      "$AGENT_HOME/.continue/rules/best-practices.md" | \
+      "$AGENT_HOME/.codeium/windsurf/memories/global_rules.md") return 1 ;;
+    "$AGENT_HOME"/.claude/projects/*/memory/*.md | \
+      "$AGENT_HOME"/.codex/memories/*.md | \
+      "$AGENT_HOME"/.cursor/rules/*.mdc | \
+      "$AGENT_HOME"/.cursor/rules/*.md | \
+      "$AGENT_HOME"/.continue/rules/*.md | \
+      "$AGENT_HOME"/.codeium/windsurf/memories/*.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_manifest() {
+  dir="$1"
+  manifest="$2"
+  line=0
+  while IFS="$TAB" read -r staged orig; do
+    line=$((line + 1))
+    [ -n "$staged" ] || [ -n "$orig" ] || continue
+    if [ -z "$staged" ] || [ -z "$orig" ] ||
+      [ "$staged" != "$(basename "$staged")" ] ||
+      ! is_memory_store_path "$orig"; then
+      echo "agent: unsafe manifest entry at $manifest:$line" >&2
+      return 1
+    fi
+    if [ -L "$dir/$staged" ]; then
+      echo "agent: staged file is a symbolic link at $manifest:$line" >&2
+      return 1
+    fi
+  done <"$manifest"
 }
 
 cmd_apply() {
@@ -356,7 +481,12 @@ cmd_apply() {
     echo "stage stores first with: agent gather $dir" >&2
     exit 1
   fi
+  if [ -L "$manifest" ]; then
+    echo "agent: refusing symbolic-link manifest: $manifest" >&2
+    exit 1
+  fi
   require_src
+  validate_manifest "$dir" "$manifest"
   updated=0
   while IFS="$TAB" read -r staged orig; do
     [ -n "$staged" ] && [ -n "$orig" ] || continue
@@ -364,7 +494,13 @@ cmd_apply() {
     [ -f "$s" ] || continue
     if [ ! -f "$orig" ] || [ "$(sum "$s")" != "$(sum "$orig")" ]; then
       mkdir -p "$(dirname "$orig")"
-      cp "$s" "$orig"
+      APPLY_TMP=$(mktemp "$(dirname "$orig")/.agent-sync-apply.XXXXXXXX") || {
+        echo "agent: could not create a temporary file beside $orig" >&2
+        exit 1
+      }
+      cp "$s" "$APPLY_TMP"
+      mv "$APPLY_TMP" "$orig"
+      APPLY_TMP=""
       echo "updated store: $orig"
       updated=$((updated + 1))
     fi

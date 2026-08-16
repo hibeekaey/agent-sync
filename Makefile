@@ -14,6 +14,4 @@ uninstall:
 
 test:
 	sh -n bin/agent
-	bin/agent targets
-	bin/agent status || true
-	@echo "ok"
+	sh tests/agent_test.sh

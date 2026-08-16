@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-08-16
+
+### Fixed
+
+| Issue | Resolution |
+| --- | --- |
+| Private memory in predictable temporary files | Private `mktemp` files, restrictive permissions and signal cleanup |
+| Deleted source memories remaining in imported sections | Empty sources now remove their managed sections |
+| Canon truncation from malformed import markers | Full marker preflight before any sync mutation |
+| Custom synthesized sources leaving Claude stale | Claude becomes a sync target when the source lives elsewhere |
+| Unsafe `apply` manifest destinations | Preflight restricts writes to supported memory stores and rejects staged symlinks |
+
 ## [1.2.0] - 2026-08-16
 
 ### Added

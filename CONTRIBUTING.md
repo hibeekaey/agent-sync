@@ -21,21 +21,23 @@ Thanks for your interest in agent-sync.
 ## Developing
 
 ```sh
-make test        # syntax check + smoke run against your real home dir
+make test        # syntax check + isolated behavioral regression suite
 shellcheck bin/agent
 ```
 
-`make test` runs read-only commands plus `status`; it never mutates your
-agent configuration. Test `sync`/`migrate` changes against a scratch canon:
+`make test` uses `AGENT_SYNC_HOME` and `AGENT_SYNC_SOURCE` to build an isolated
+fixture. It never reads or mutates your real agent configuration. For manual
+testing against a scratch agent root:
 
 ```sh
-AGENT_SYNC_SOURCE=/tmp/scratch-canon.md bin/agent sync
+AGENT_SYNC_HOME=/tmp/scratch-agents \
+  AGENT_SYNC_SOURCE=/tmp/scratch-canon.md \
+  bin/agent sync
 ```
 
 ## Pull requests
 
 - Keep PRs small and focused; one behavior change per PR.
-- A behavior change needs a test or a demonstrated run in the PR
-  description (2-4 bullet summary plus a one-line validation note).
-- CI runs shellcheck (Linux) and the smoke test on ubuntu and macos; both
+- A behavior change needs a regression test.
+- CI runs shellcheck (Linux) and the behavioral suite on ubuntu and macos; both
   must be green.
