@@ -32,7 +32,7 @@ testing against a scratch agent root:
 ```sh
 AGENT_SYNC_HOME=/tmp/scratch-agents \
   AGENT_SYNC_SOURCE=/tmp/scratch-canon.md \
-  bin/agent sync
+  bin/agent sync --synthesizer deterministic
 ```
 
 ## Pull requests

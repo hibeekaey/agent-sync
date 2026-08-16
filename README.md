@@ -26,9 +26,9 @@ switching agents means starting over. `agent sync` breaks the silos with a
 three-stage round trip:
 
 1. **Gather**: read every agent's own memory stores.
-2. **Synthesize**: fold them into one synthesized memory file. Mechanically
-   by default (each agent's memories land in a marker-delimited section that
-   refreshes in place), or semantically when you configure a synthesizer.
+2. **Synthesize**: fold them into one synthesized memory file. Claude does the
+   semantic merge when available, then Codex; if neither is usable, the
+   deterministic marker-delimited merge remains.
 3. **Redistribute**: write the result to every installed agent's global
    instructions slot.
 
@@ -36,11 +36,11 @@ After a sync, every agent knows what every agent has learned.
 
 | Verb | What it does |
 | --- | --- |
-| `agent sync` | The full round trip: gather, synthesize, redistribute |
+| `agent sync [--synthesizer MODE]` | The full round trip: gather, synthesize, redistribute |
 | `agent status` | Parity check; exit 1 if any agent is stale (cron-friendly) |
 | `agent migrate <agent>` | Fold just one agent's stores in, then redistribute |
 | `agent gather [dir]` | Stage all stores into a directory for editing and review |
-| `agent apply [dir]` | Push edited staged files back to their stores, then run the full sync |
+| `agent apply [dir] [--synthesizer MODE]` | Push edited staged files back to their stores, then run the full sync |
 | `agent targets` | List targets and detection state |
 
 The edit loop: `agent gather`, edit the staged files in one place, `agent
@@ -89,21 +89,34 @@ Tools are detected by their config directory; absent tools are skipped, so
 the same binary serves every machine. Files agent-sync generates are never
 gathered, so the tool cannot feed on its own output.
 
-## Semantic synthesis
+## Synthesis selection
 
-The mechanical merge is deterministic but keeps imported sections raw. For a
-real merge (dedupe, conflict resolution, folding into your curated
-structure), point `AGENT_SYNC_SYNTHESIZER` at any command that reads a merge
-prompt on stdin and prints the merged markdown document on stdout:
+`agent sync` automatically selects a semantic synthesizer. The same selection
+is used by the full sync at the end of `agent apply`.
+
+| Selection | Behaviour |
+| --- | --- |
+| `auto` (default) | Try Claude, then Codex, then retain the deterministic merge |
+| `claude` | Require the Claude CLI and use its configured default model |
+| `codex` | Require the Codex CLI and use its configured default model |
+| `deterministic` | Use no model; keep refreshed marker-delimited imports |
+| Custom environment command | Run the command from `AGENT_SYNC_SYNTHESIZER` |
 
 ```sh
+agent sync
+agent sync --synthesizer codex
+agent sync --synthesizer deterministic
 AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
 ```
 
-The previous file is kept at `<file>.bak`. Output is validated (non-empty,
-starts with a heading) and the mechanical merge is kept if the synthesizer
-fails. A recursion guard stops a synthesizer-spawned agent from re-entering
-agent-sync.
+CLI selection overrides `AGENT_SYNC_SYNTHESIZER`. Automatic model calls are
+non-interactive and use the CLI's configured default model. Claude runs
+without session persistence; Codex runs ephemerally in a read-only sandbox.
+The previous file is kept at `<file>.bak`. Output is validated as a non-empty
+Markdown document beginning with a heading. A failed automatic candidate
+falls through to the next candidate, and the deterministic merge is always
+the final fallback. A recursion guard stops a synthesizer-spawned agent from
+re-entering agent-sync.
 
 ## Automating with Claude Code
 
@@ -157,6 +170,7 @@ To install a specific release, add `--pin <tag>`. Without `gh`, copying
 | Privacy | Memory files can contain private context. Keep the synthesized file and gathered output out of public repositories. |
 | Synthesized source | `AGENT_SYNC_SOURCE` overrides its location. When it lives elsewhere, sync redistributes it to Claude too. |
 | Configuration root | `AGENT_SYNC_HOME` overrides it, primarily for isolated testing. |
+| Model cost | Automatic Claude or Codex synthesis can consume the account's model allowance. Select `deterministic` to avoid model use. |
 | Full usage | Run `agent help`. |
 
 ## Contributing
