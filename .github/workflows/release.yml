@@ -27,6 +27,11 @@ jobs:
             echo "bin/agent declares v$DECLARED but the release is $TAG" >&2
             exit 1
           fi
+      # The bundled skill ships on this tag, so it must still be valid here.
+      # Publishing it is deliberately NOT done: gh skill publish insists on
+      # creating a new tag, which would fork a second version line.
+      - name: the bundled skill must validate
+        run: gh skill publish --dry-run
       - name: build checksummed assets
         run: |
           cp bin/agent agent
