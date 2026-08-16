@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-08-16
+
+### Added
+
+| Feature | Behaviour |
+| --- | --- |
+| `agent mcp` | One MCP server registry (line-based specs, no JSON parsing) pushed to every tool: CLI-driven for Claude/Codex/Gemini/Qwen/Amp (remove-then-add, idempotent), agent-sync-owned dedicated files for Cursor/Windsurf/Kiro (never rewrites files it did not create), printable snippets for shared-settings tools |
+| `agent skills sync` | Mirrors the canonical skills directory into every agent's user-scope skills directory per the gh-skill registry mapping (Codex, Gemini, Qwen, Cursor, Copilot, Continue, Kiro, Roo, OpenCode, Zed via `~/.agents/skills`) |
+| `agent hooks [tool]` | Verified automation snippets: Claude SessionEnd, Codex Stop (SessionEnd's 3s cap is too tight), Gemini SessionEnd, OpenCode session.idle plugin, cron fallback |
+| `agent pack` | Shareable markdown memory packs from GitHub, pinned by commit in a lockfile, folded on sync, cleanly removable |
+| `agent link --import` | Folds native project configs (.cursor/rules with frontmatter, .clinerules, .windsurfrules, copilot-instructions, .roo/rules, .goosehints) verbatim into AGENTS.md |
+| Target filtering | `--only`/`--skip` flags and `AGENT_SYNC_ONLY`/`AGENT_SYNC_SKIP` env vars |
+| Tap auto-bump | The release workflow updates the Homebrew formula when a `TAP_TOKEN` secret is configured |
+| Windows | `docs/windows.md`: WSL supported and documented |
+
+### Notes
+
+- All MCP command grammars and file shapes were adversarially verified
+  against official documentation, including the traps: Gemini/Qwen
+  `httpUrl` vs `url`, Windsurf `serverUrl`, Claude requiring explicit
+  `type` on url entries, Codex TOML via its own CLI only.
+- Skills mapping corrections from verification: Codex user scope is
+  `~/.codex/skills` (`~/.agents/skills` is project scope); Windsurf was
+  removed from the gh-skill registry and is not a skills target.
+
 ## [1.4.0] - 2026-08-16
 
 ### Added

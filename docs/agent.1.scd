@@ -6,7 +6,7 @@ agent - synchronize agent memory across AI coding agents
 
 # SYNOPSIS
 
-*agent* sync [--synthesizer MODE] [--dry-run]++
+*agent* sync [--synthesizer MODE] [--dry-run] [--only LIST] [--skip LIST]++
 *agent* status++
 *agent* diff++
 *agent* targets++
@@ -14,8 +14,12 @@ agent - synchronize agent memory across AI coding agents
 *agent* migrate AGENT++
 *agent* gather [DIR]++
 *agent* apply [DIR] [--synthesizer MODE] [--dry-run]++
-*agent* link [DIR]++
-*agent* revert
+*agent* link [DIR] [--import]++
+*agent* revert++
+*agent* pack <add|list|update|remove>++
+*agent* mcp <add|list|remove|sync|snippet>++
+*agent* skills sync++
+*agent* hooks [TOOL]
 
 # DESCRIPTION
 
@@ -60,14 +64,42 @@ installed agent's global instructions slot.
 	Push edited staged files back to their original stores, then run the
 	full sync.
 
-*link* [DIR]
+*link* [DIR] [--import]
 	Make one project-scope AGENTS.md readable by every agent working in a
 	repository: seeds AGENTS.md, bridges CLAUDE.md via an @AGENTS.md
-	import, and configures Gemini CLI's context.fileName.
+	import, and configures Gemini CLI's context.fileName. With *--import*,
+	folds the repository's native per-tool configs (.cursor/rules,
+	.cursorrules, .clinerules, .windsurfrules, copilot-instructions,
+	.roo/rules, .goosehints) verbatim into AGENTS.md under a managed
+	marker.
 
 *revert*
 	Restore targets from their .orig adoption backups and the synthesized
 	file from its .bak.
+
+*pack* add OWNER/REPO[@REF][:SUBDIR] | list | update [NAME] | remove NAME
+	Shareable markdown memory packs pulled from GitHub at a pinned commit,
+	recorded in a lockfile, and folded into the synthesized file on every
+	sync.
+
+*mcp* <add|list|remove|sync|snippet>
+	Add takes NAME [--env K=V]... -- COMMAND [ARGS...] for stdio servers,
+	or NAME --url URL with optional --header 'K: V' for remote servers.
+	One MCP server registry for every tool. *sync* pushes each server via
+	the tool's own CLI (claude, codex, gemini, qwen, amp) or writes an
+	agent-sync-owned dedicated config file (cursor, windsurf, kiro).
+	Shared config files (zed, opencode, goose, continue) are never edited;
+	*snippet* prints what to paste.
+
+*skills* sync
+	Mirror the canonical skills directory (default ~/.claude/skills,
+	override with AGENT_SYNC_SKILLS_SOURCE) into every agent's user-scope
+	skills directory, per the gh-skill agent registry mapping.
+
+*hooks* [TOOL]
+	Print verified automation snippets that keep memory fresh: Claude Code
+	SessionEnd, Codex Stop, Gemini SessionEnd, an OpenCode plugin, and a
+	cron fallback. Printed, never installed.
 
 # ENVIRONMENT
 

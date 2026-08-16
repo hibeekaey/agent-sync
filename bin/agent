@@ -16,12 +16,20 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
 TAB=$(printf '\t')
 DRY_RUN=0
+TARGET_ONLY="${AGENT_SYNC_ONLY:-}"
+TARGET_SKIP="${AGENT_SYNC_SKIP:-}"
+STATE_DIR="$AGENT_HOME/.config/agent-sync"
+PACKS_DIR="$STATE_DIR/packs"
+PACKS_LOCK="$STATE_DIR/packs.lock"
+MCP_DIR="$STATE_DIR/mcp.d"
+MCP_OWNED="$STATE_DIR/mcp-owned"
+SKILLS_SOURCE="${AGENT_SYNC_SKILLS_SOURCE:-$AGENT_HOME/.claude/skills}"
 PRIVATE_TMP=""
 CANON_TMP=""
 APPLY_TMP=""
@@ -70,11 +78,29 @@ Usage:
   agent apply [DIR] [--synthesizer MODE] [--dry-run]
                          push edited staged files from a gather DIR back to
                          their original stores, then run the full sync
-  agent link [DIR]       make one project-scope AGENTS.md readable by every
-                         agent in a repository (default: current directory)
+  agent link [DIR] [--import]
+                         make one project-scope AGENTS.md readable by every
+                         agent in a repository; --import folds the repo's
+                         native per-tool configs into it
   agent revert           restore targets from their .orig adoption backups
                          and the synthesized file from its .bak
+  agent pack <add|list|update|remove>
+                         shareable markdown memory packs pulled from GitHub
+                         at a pinned commit, folded in on every sync
+  agent mcp <add|list|remove|sync|snippet>
+                         one MCP server registry pushed to every tool, via
+                         its own CLI (claude, codex, gemini, qwen, amp) or
+                         an agent-sync-owned config file (cursor, windsurf,
+                         kiro)
+  agent skills sync      mirror the canonical skills directory (default
+                         ~/.claude/skills) into every agent's user-scope
+                         skills directory
+  agent hooks [TOOL]     print verified automation snippets that keep memory
+                         fresh (claude, codex, gemini, opencode)
   agent help             this text
+
+Target filtering: --only LIST / --skip LIST flags (sync, apply) or the
+AGENT_SYNC_ONLY / AGENT_SYNC_SKIP env vars, comma-separated target names.
 
 The edit loop: agent gather, edit the staged files, agent apply. Your edits
 land in the original stores, get folded into the synthesized file, and are
@@ -122,6 +148,45 @@ crush|$AGENT_HOME/.config/crush|$AGENT_HOME/.config/crush/CRUSH.md|copy
 roo|$AGENT_HOME/.roo|$AGENT_HOME/.roo/rules/agent-sync.md|copy
 cline|$AGENT_HOME/Documents/Cline|$AGENT_HOME/Documents/Cline/Rules/agent-sync.md|copy
 EOF
+}
+
+NL='
+'
+
+# Resolve a directory to its physical path (symlinks resolved).
+physical_path() {
+  (CDPATH='' cd -P "$1" 2>/dev/null && pwd -P)
+}
+
+# Registry names (packs, MCP servers) become file paths; keep them to one
+# safe path segment.
+require_safe_name() {
+  case "$1" in
+    "" | */* | .* | *"$NL"*)
+      echo "agent: unsafe name: $1" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# Imported content must never be able to open or close our managed markers.
+neutralize_markers() {
+  sed 's/<!-- agent-sync:/<!-- agent-sync (escaped):/g' "$1"
+}
+
+# Per-agent targeting: --only/--skip flags and AGENT_SYNC_ONLY/AGENT_SYNC_SKIP
+# env vars hold comma-separated target names.
+target_selected() {
+  if [ -n "$TARGET_ONLY" ]; then
+    case ",$TARGET_ONLY," in
+      *",$1,"*) ;;
+      *) return 1 ;;
+    esac
+  fi
+  case ",$TARGET_SKIP," in
+    *",$1,"*) return 1 ;;
+  esac
+  return 0
 }
 
 # Cursor rules need .mdc frontmatter around the same body.
@@ -291,7 +356,7 @@ import_agent() {
       echo
       echo "### $f"
       echo
-      cat "$f"
+      neutralize_markers "$f"
       printf '\n'
     } >>"$content"
     found=$((found + 1))
@@ -320,6 +385,28 @@ parse_synthesizer_args() {
         ;;
       --dry-run)
         DRY_RUN=1
+        ;;
+      --only)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "agent: --only requires a comma-separated target list" >&2
+          return 2
+        fi
+        TARGET_ONLY="$1"
+        ;;
+      --only=*)
+        TARGET_ONLY=${1#*=}
+        ;;
+      --skip)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "agent: --skip requires a comma-separated target list" >&2
+          return 2
+        fi
+        TARGET_SKIP="$1"
+        ;;
+      --skip=*)
+        TARGET_SKIP=${1#*=}
         ;;
       *)
         echo "agent: unknown sync option: $1" >&2
@@ -457,6 +544,10 @@ EOF
 
 distribute() {
   while IFS='|' read -r name dir dest mode; do
+    if ! target_selected "$name"; then
+      echo "$name: skipped (filtered)"
+      continue
+    fi
     if [ ! -d "$dir" ]; then
       echo "$name: skipped (not installed)"
       continue
@@ -489,6 +580,38 @@ $(targets)
 EOF
 }
 
+# Fold one installed memory pack into the synthesized file.
+import_pack() {
+  pname="$1"
+  ensure_private_tmp
+  content="$PRIVATE_TMP/pack-content"
+  {
+    echo "## Memory pack: $pname"
+    echo
+    echo "Installed via agent pack; refresh with: agent pack update"
+  } >"$content"
+  found=0
+  for f in "$PACKS_DIR/$pname"/*.md; do
+    [ -f "$f" ] || continue
+    {
+      echo
+      echo "### $(basename "$f")"
+      echo
+      neutralize_markers "$f"
+      printf '\n'
+    } >>"$content"
+    found=$((found + 1))
+  done
+  import_into_canon "pack:$pname" "$content" "$found"
+}
+
+each_pack_name() {
+  [ -f "$PACKS_LOCK" ] || return 0
+  while IFS="$TAB" read -r pname _src _ref _sha; do
+    [ -n "$pname" ] && echo "$pname"
+  done <"$PACKS_LOCK"
+}
+
 cmd_sync() {
   parse_synthesizer_args "$@"
   require_src
@@ -496,10 +619,16 @@ cmd_sync() {
   for name in claude codex cursor continue windsurf goose; do
     validate_import_section "$name"
   done
+  for pname in $(each_pack_name); do
+    validate_import_section "pack:$pname"
+  done
   for name in claude codex cursor continue windsurf goose; do
     import_agent "$name"
     n="$IMPORTED_COUNT"
     [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
+  done
+  for pname in $(each_pack_name); do
+    import_pack "$pname"
   done
   synthesize
   distribute
@@ -510,6 +639,7 @@ cmd_status() {
   fails=0
   src_sum=$(sum "$SRC")
   while IFS='|' read -r name dir dest mode; do
+    target_selected "$name" || continue
     if [ ! -d "$dir" ]; then
       echo "$name: not installed"
       continue
@@ -650,18 +780,31 @@ validate_manifest() {
 }
 
 cmd_apply() {
+  # The first bare (non --flag) argument is the gather directory, wherever
+  # it appears; every flag is handed to the shared option parser.
   dir="./agent-memories"
-  case "${1:-}" in
-    "" | --synthesizer | --synthesizer=* | --dry-run) ;;
-    --*)
-      echo "agent: unknown apply option: $1" >&2
-      return 2
-      ;;
-    *)
-      dir="$1"
-      shift
-      ;;
-  esac
+  found_dir=0
+  orig_count=$#
+  for a in "$@"; do
+    case "$a" in
+      --*)
+        set -- "$@" "$a"
+        ;;
+      *)
+        if [ "$found_dir" -eq 0 ]; then
+          dir="$a"
+          found_dir=1
+        else
+          echo "agent: unexpected apply argument: $a" >&2
+          return 2
+        fi
+        ;;
+    esac
+  done
+  while [ "$orig_count" -gt 0 ]; do
+    shift
+    orig_count=$((orig_count - 1))
+  done
   manifest="$dir/.agent-manifest"
   if [ ! -f "$manifest" ]; then
     echo "agent: $dir is not a gather directory (missing .agent-manifest)" >&2
@@ -712,6 +855,7 @@ cmd_diff() {
   stale=0
   ensure_private_tmp
   while IFS='|' read -r name dir dest mode; do
+    target_selected "$name" || continue
     [ -d "$dir" ] || continue
     expected="$SRC"
     if [ "$mode" = "cursor" ]; then
@@ -817,7 +961,18 @@ EOF
 # Junie, Goose, Jules and others; Claude Code needs an @AGENTS.md import
 # stub; Gemini CLI needs context.fileName in .gemini/settings.json.
 cmd_link() {
-  dir="${1:-.}"
+  dir="."
+  do_import=0
+  for a in "$@"; do
+    case "$a" in
+      --import) do_import=1 ;;
+      -*)
+        echo "agent: unknown link option: $a" >&2
+        exit 2
+        ;;
+      *) dir="$a" ;;
+    esac
+  done
   if [ ! -d "$dir" ]; then
     echo "agent: not a directory: $dir" >&2
     exit 2
@@ -862,7 +1017,790 @@ cmd_link() {
       echo "link: note: $shadow shadows AGENTS.md in Zed (first-match order)"
     fi
   done
+  # --import: fold the repo's native per-tool configs into AGENTS.md under a
+  # managed marker, verbatim (frontmatter preserved), refreshed on re-run.
+  if [ "$do_import" -eq 1 ]; then
+    ensure_private_tmp
+    content="$PRIVATE_TMP/link-import"
+    {
+      echo "## Imported project agent configs"
+      echo
+      echo "Folded verbatim by agent link --import; re-run it to refresh."
+    } >"$content"
+    found=0
+    for f in "$dir"/.cursor/rules/*.mdc "$dir"/.cursorrules "$dir"/.windsurfrules \
+      "$dir"/.clinerules "$dir"/.clinerules/*.md "$dir"/.github/copilot-instructions.md \
+      "$dir"/.roo/rules/*.md "$dir"/.goosehints; do
+      [ -f "$f" ] || continue
+      {
+        echo
+        echo "### ${f#"$dir"/}"
+        echo
+        cat "$f"
+        printf '\n'
+      } >>"$content"
+      found=$((found + 1))
+    done
+    if [ "$found" -gt 0 ]; then
+      old_src="$SRC"
+      SRC="$agents_md"
+      if validate_import_section "project"; then
+        import_into_canon "project" "$content" "$found"
+        SRC="$old_src"
+        echo "link: imported $found native config file(s) into AGENTS.md"
+      else
+        SRC="$old_src"
+        exit 1
+      fi
+    else
+      echo "link: no native agent configs found to import"
+    fi
+  fi
   echo "link: done; AGENTS.md is the single project instructions file"
+}
+
+pack_lock_remove() {
+  pname="$1"
+  [ -f "$PACKS_LOCK" ] || return 0
+  ensure_private_tmp
+  awk -F "$TAB" -v n="$pname" '$1 != n' "$PACKS_LOCK" >"$PRIVATE_TMP/lock" &&
+    cp "$PRIVATE_TMP/lock" "$PACKS_LOCK"
+}
+
+# Shareable memory packs: markdown pulled from a GitHub repo at a pinned
+# commit, recorded in a lockfile, folded into the synthesized file on sync.
+cmd_pack() {
+  sub="${1:-list}"
+  case "$sub" in
+    add)
+      spec="${2:-}"
+      if [ -z "$spec" ]; then
+        echo "usage: agent pack add OWNER/REPO[@REF][:SUBDIR]" >&2
+        exit 2
+      fi
+      subdir=""
+      case "$spec" in *:*)
+        subdir=${spec#*:}
+        spec=${spec%%:*}
+        ;;
+      esac
+      ref="HEAD"
+      case "$spec" in *@*)
+        ref=${spec#*@}
+        spec=${spec%%@*}
+        ;;
+      esac
+      case "$spec" in
+        */*) ;;
+        *)
+          echo "agent: pack source must be OWNER/REPO" >&2
+          exit 2
+          ;;
+      esac
+      # Owner is part of the name so otherowner/repo cannot shadow an
+      # installed owner/repo pack; tr collapses path characters so the name
+      # is always one safe path segment.
+      pname=$(printf '%s' "$spec${subdir:+-$subdir}" | tr -c 'A-Za-z0-9._\n-' '-')
+      require_safe_name "$pname"
+      sha=$(curl -fsSL "https://api.github.com/repos/$spec/commits/$ref" |
+        sed -n 's/^  "sha": *"\([0-9a-f]*\)".*/\1/p' | head -1)
+      if [ -z "$sha" ]; then
+        echo "agent: could not resolve $spec@$ref" >&2
+        exit 1
+      fi
+      ensure_private_tmp
+      curl -fsSL "https://codeload.github.com/$spec/tar.gz/$sha" -o "$PRIVATE_TMP/pack.tgz"
+      mkdir -p "$PRIVATE_TMP/pack-x"
+      tar -xzf "$PRIVATE_TMP/pack.tgz" -C "$PRIVATE_TMP/pack-x"
+      srcdir=$(find "$PRIVATE_TMP/pack-x" -mindepth 1 -maxdepth 1 -type d | head -1)
+      [ -n "$subdir" ] && srcdir="$srcdir/$subdir"
+      if [ ! -d "$srcdir" ]; then
+        echo "agent: subdir not found in pack: $subdir" >&2
+        exit 1
+      fi
+      # Stage first: existing pack content and its lock entry survive a
+      # fetch that yields nothing. Symlinked tarball entries are never
+      # followed (they can point at arbitrary local files).
+      stage="$PRIVATE_TMP/pack-stage"
+      rm -rf "$stage"
+      mkdir -p "$stage"
+      copied=0
+      for f in "$srcdir"/*.md; do
+        [ -f "$f" ] || continue
+        [ -L "$f" ] && continue
+        case "$(basename "$f")" in LICENSE* | CHANGELOG* | CONTRIBUTING* | CODE_OF_CONDUCT*) continue ;; esac
+        cp "$f" "$stage/"
+        copied=$((copied + 1))
+      done
+      if [ "$copied" -eq 0 ]; then
+        echo "agent: no markdown files found in $spec${subdir:+:$subdir}; keeping any existing pack content" >&2
+        exit 1
+      fi
+      mkdir -p "$PACKS_DIR"
+      rm -rf "${PACKS_DIR:?}/$pname"
+      mv "$stage" "$PACKS_DIR/$pname"
+      mkdir -p "$STATE_DIR"
+      touch "$PACKS_LOCK"
+      pack_lock_remove "$pname"
+      printf '%s\t%s\t%s\t%s\n' "$pname" "$spec${subdir:+:$subdir}" "$ref" "$sha" >>"$PACKS_LOCK"
+      echo "pack $pname: $copied file(s) pinned at $spec@$(printf '%.12s' "$sha")"
+      echo "run: agent sync (folds the pack into the synthesized file)"
+      ;;
+    list)
+      if [ -s "$PACKS_LOCK" ] 2>/dev/null; then
+        while IFS="$TAB" read -r pname psrc pref psha; do
+          [ -n "$pname" ] || continue
+          echo "$pname: $psrc@$pref (pinned $(printf '%.12s' "$psha"))"
+        done <"$PACKS_LOCK"
+      else
+        echo "no packs installed (agent pack add OWNER/REPO)"
+      fi
+      ;;
+    update)
+      only="${2:-}"
+      [ -f "$PACKS_LOCK" ] || {
+        echo "no packs installed"
+        exit 0
+      }
+      ensure_private_tmp
+      cp "$PACKS_LOCK" "$PRIVATE_TMP/lock-snapshot"
+      while IFS="$TAB" read -r pname psrc pref _sha; do
+        [ -n "$pname" ] || continue
+        [ -z "$only" ] || [ "$only" = "$pname" ] || continue
+        base=${psrc%%:*}
+        sub=""
+        case "$psrc" in *:*) sub=${psrc#*:} ;; esac
+        "$0" pack add "$base@$pref${sub:+:$sub}"
+      done <"$PRIVATE_TMP/lock-snapshot"
+      ;;
+    remove)
+      pname="${2:-}"
+      if [ -z "$pname" ]; then
+        echo "usage: agent pack remove NAME" >&2
+        exit 2
+      fi
+      require_safe_name "$pname"
+      rm -rf "${PACKS_DIR:?}/$pname"
+      pack_lock_remove "$pname"
+      if [ -f "$SRC" ] && validate_import_section "pack:$pname"; then
+        ensure_private_tmp
+        : >"$PRIVATE_TMP/empty"
+        import_into_canon "pack:$pname" "$PRIVATE_TMP/empty" 0
+      fi
+      echo "pack $pname removed; run: agent sync"
+      ;;
+    *)
+      echo "usage: agent pack <add|list|update|remove>" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# MCP server sync. Registry entries are line-based spec files agent-sync can
+# both write and read (no JSON parsing in sh); each tool then gets the server
+# through its own CLI where one exists, or a dedicated owned config file.
+# Every command grammar and file shape below was verified against the tool's
+# official documentation.
+
+json_escape() {
+  printf '%s' "$1" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
+}
+
+# Load one spec file into MCP_TYPE/MCP_CMD/MCP_URL plus list files
+# $PRIVATE_TMP/mcp-{args,envs,headers} (one value per line).
+mcp_load_spec() {
+  spec="$1"
+  ensure_private_tmp
+  MCP_TYPE="" MCP_CMD="" MCP_URL=""
+  : >"$PRIVATE_TMP/mcp-args"
+  : >"$PRIVATE_TMP/mcp-envs"
+  : >"$PRIVATE_TMP/mcp-headers"
+  while IFS= read -r line; do
+    case "$line" in
+      type=*) MCP_TYPE=${line#type=} ;;
+      command=*) MCP_CMD=${line#command=} ;;
+      url=*) MCP_URL=${line#url=} ;;
+      arg=*) printf '%s\n' "${line#arg=}" >>"$PRIVATE_TMP/mcp-args" ;;
+      env=*) printf '%s\n' "${line#env=}" >>"$PRIVATE_TMP/mcp-envs" ;;
+      header=*) printf '%s\n' "${line#header=}" >>"$PRIVATE_TMP/mcp-headers" ;;
+    esac
+  done <"$spec"
+}
+
+# Render the loaded spec as a Claude-shaped JSON object (the de-facto
+# standard shape; cursor/windsurf/kiro variants derive from it).
+mcp_render_json() {
+  style="$1" # claude | cursor | windsurf | kiro
+  if [ "$MCP_TYPE" = "stdio" ]; then
+    printf '{'
+    case "$style" in
+      claude | cursor) printf '"type": "stdio", ' ;;
+    esac
+    printf '"command": "%s"' "$(json_escape "$MCP_CMD")"
+    if [ -s "$PRIVATE_TMP/mcp-args" ]; then
+      printf ', "args": ['
+      first=1
+      while IFS= read -r a; do
+        [ "$first" -eq 1 ] || printf ', '
+        printf '"%s"' "$(json_escape "$a")"
+        first=0
+      done <"$PRIVATE_TMP/mcp-args"
+      printf ']'
+    fi
+    if [ -s "$PRIVATE_TMP/mcp-envs" ]; then
+      printf ', "env": {'
+      first=1
+      while IFS= read -r e; do
+        [ "$first" -eq 1 ] || printf ', '
+        printf '"%s": "%s"' "$(json_escape "${e%%=*}")" "$(json_escape "${e#*=}")"
+        first=0
+      done <"$PRIVATE_TMP/mcp-envs"
+      printf '}'
+    fi
+    printf '}'
+  else
+    printf '{'
+    case "$style" in
+      claude) printf '"type": "http", "url": "%s"' "$(json_escape "$MCP_URL")" ;;
+      windsurf) printf '"serverUrl": "%s"' "$(json_escape "$MCP_URL")" ;;
+      *) printf '"url": "%s"' "$(json_escape "$MCP_URL")" ;;
+    esac
+    if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
+      printf ', "headers": {'
+      first=1
+      while IFS= read -r h; do
+        [ "$first" -eq 1 ] || printf ', '
+        printf '"%s": "%s"' "$(json_escape "${h%%:*}")" "$(json_escape "$(printf '%s' "${h#*:}" | sed 's/^ //')")"
+        first=0
+      done <"$PRIVATE_TMP/mcp-headers"
+      printf '}'
+    fi
+    printf '}'
+  fi
+}
+
+# Push one loaded spec to one CLI tool. Remove-then-add keeps it idempotent.
+mcp_push_cli() {
+  tool="$1"
+  name="$2"
+  case "$tool" in
+    claude)
+      claude mcp remove "$name" --scope user >/dev/null 2>&1 || true
+      claude mcp add-json "$name" "$(mcp_render_json claude)" --scope user >/dev/null
+      ;;
+    codex)
+      codex mcp remove "$name" >/dev/null 2>&1 || true
+      if [ "$MCP_TYPE" = "stdio" ]; then
+        set --
+        while IFS= read -r e; do
+          set -- "$@" --env "$e"
+        done <"$PRIVATE_TMP/mcp-envs"
+        set -- "$@" -- "$MCP_CMD"
+        while IFS= read -r a; do
+          set -- "$@" "$a"
+        done <"$PRIVATE_TMP/mcp-args"
+        codex mcp add "$name" "$@" >/dev/null
+      else
+        if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
+          echo "codex: note: the codex CLI takes no custom headers; header(s) omitted for $name" >&2
+        fi
+        codex mcp add "$name" --url "$MCP_URL" >/dev/null
+      fi
+      ;;
+    gemini | qwen)
+      "$tool" mcp remove -s user "$name" >/dev/null 2>&1 || true
+      if [ "$MCP_TYPE" = "stdio" ]; then
+        set --
+        while IFS= read -r e; do
+          set -- "$@" -e "$e"
+        done <"$PRIVATE_TMP/mcp-envs"
+        set -- "$@" "$name" "$MCP_CMD"
+        while IFS= read -r a; do
+          set -- "$@" "$a"
+        done <"$PRIVATE_TMP/mcp-args"
+        "$tool" mcp add -s user "$@" >/dev/null
+      else
+        set --
+        while IFS= read -r h; do
+          set -- "$@" --header "$h"
+        done <"$PRIVATE_TMP/mcp-headers"
+        "$tool" mcp add -s user --transport http "$@" "$name" "$MCP_URL" >/dev/null
+      fi
+      ;;
+    amp)
+      amp mcp remove "$name" >/dev/null 2>&1 || true
+      if [ "$MCP_TYPE" = "stdio" ]; then
+        set -- -- "$MCP_CMD"
+        while IFS= read -r a; do
+          set -- "$@" "$a"
+        done <"$PRIVATE_TMP/mcp-args"
+        amp mcp add "$name" "$@" >/dev/null
+      else
+        if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
+          echo "amp: note: the amp CLI takes no custom headers; header(s) omitted for $name" >&2
+        fi
+        amp mcp add "$name" "$MCP_URL" >/dev/null
+      fi
+      ;;
+  esac
+}
+
+# Rebuild one owned MCP config file wholesale from every registry entry.
+# Only files agent-sync created (tracked in MCP_OWNED) are ever rewritten.
+mcp_write_owned_file() {
+  style="$1"
+  dest="$2"
+  if [ -f "$dest" ] && ! grep -qxF "$dest" "$MCP_OWNED" 2>/dev/null; then
+    echo "mcp: $dest exists and is not agent-sync managed; add servers there yourself"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  tmp="$dest.tmp.agent-sync"
+  {
+    printf '{\n  "mcpServers": {\n'
+    first=1
+    for spec in "$MCP_DIR"/*.spec; do
+      [ -f "$spec" ] || continue
+      name=$(basename "$spec" .spec)
+      mcp_load_spec "$spec"
+      if [ "$style" = "kiro" ] && [ "$MCP_TYPE" != "stdio" ]; then
+        echo "kiro: $name skipped (kiro's user MCP file is documented for stdio servers only)" >&2
+        continue
+      fi
+      [ "$first" -eq 1 ] || printf ',\n'
+      printf '    "%s": %s' "$(json_escape "$name")" "$(mcp_render_json "$style")"
+      first=0
+    done
+    printf '\n  }\n}\n'
+  } >"$tmp"
+  mv "$tmp" "$dest"
+  mkdir -p "$STATE_DIR"
+  touch "$MCP_OWNED"
+  grep -qxF "$dest" "$MCP_OWNED" || printf '%s\n' "$dest" >>"$MCP_OWNED"
+  echo "mcp: wrote $dest"
+}
+
+cmd_mcp() {
+  sub="${1:-list}"
+  # shift is a POSIX special builtin: its failure is fatal in dash even
+  # under || true, so never shift an empty argument list.
+  if [ "$#" -gt 0 ]; then shift; fi
+  case "$sub" in
+    add)
+      name="${1:-}"
+      if [ -z "$name" ]; then
+        echo "usage: agent mcp add NAME [--env K=V]... -- COMMAND [ARGS...]" >&2
+        echo "       agent mcp add NAME --url URL [--header 'K: V']..." >&2
+        exit 2
+      fi
+      require_safe_name "$name"
+      shift
+      mkdir -p "$MCP_DIR"
+      spec="$MCP_DIR/$name.spec"
+      ensure_private_tmp
+      tmp="$PRIVATE_TMP/mcp-add-spec"
+      : >"$tmp"
+      mtype="" murl=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --env | --header | --url)
+            opt="$1"
+            if [ "$#" -lt 2 ]; then
+              echo "agent: $opt requires a value" >&2
+              exit 2
+            fi
+            case "$2" in *"$NL"*)
+              echo "agent: $opt values must not contain newlines" >&2
+              exit 2
+              ;;
+            esac
+            case "$opt" in
+              --env) printf 'env=%s\n' "$2" >>"$tmp" ;;
+              --header) printf 'header=%s\n' "$2" >>"$tmp" ;;
+              --url)
+                mtype="http"
+                murl="$2"
+                ;;
+            esac
+            shift 2
+            ;;
+          --)
+            shift
+            if [ "$#" -eq 0 ]; then
+              echo "agent: -- must be followed by a command" >&2
+              exit 2
+            fi
+            mtype="stdio"
+            for v in "$@"; do
+              case "$v" in *"$NL"*)
+                echo "agent: command and args must not contain newlines" >&2
+                exit 2
+                ;;
+              esac
+            done
+            printf 'command=%s\n' "$1" >>"$tmp"
+            shift
+            while [ "$#" -gt 0 ]; do
+              printf 'arg=%s\n' "$1" >>"$tmp"
+              shift
+            done
+            break
+            ;;
+          *)
+            echo "agent: unknown mcp add option: $1" >&2
+            exit 2
+            ;;
+        esac
+      done
+      if [ -z "$mtype" ]; then
+        echo "agent: mcp add needs either '-- COMMAND' or '--url URL'" >&2
+        exit 2
+      fi
+      {
+        printf 'type=%s\n' "$mtype"
+        [ -n "$murl" ] && printf 'url=%s\n' "$murl"
+        cat "$tmp"
+      } >"$spec"
+      echo "mcp: registered $name ($mtype); run: agent mcp sync"
+      ;;
+    list)
+      found=0
+      for spec in "$MCP_DIR"/*.spec; do
+        [ -f "$spec" ] || continue
+        mcp_load_spec "$spec"
+        if [ "$MCP_TYPE" = "stdio" ]; then
+          echo "$(basename "$spec" .spec): stdio $MCP_CMD"
+        else
+          echo "$(basename "$spec" .spec): http $MCP_URL"
+        fi
+        found=1
+      done
+      [ "$found" -eq 1 ] || echo "no MCP servers registered (agent mcp add NAME -- COMMAND)"
+      ;;
+    remove)
+      name="${1:-}"
+      if [ -z "$name" ]; then
+        echo "usage: agent mcp remove NAME" >&2
+        exit 2
+      fi
+      require_safe_name "$name"
+      rm -f "$MCP_DIR/$name.spec"
+      echo "mcp: $name removed from the registry; next mcp sync rewrites owned files."
+      echo "CLI-managed tools keep it until you remove it there, for example:"
+      echo "  claude mcp remove $name --scope user; codex mcp remove $name"
+      ;;
+    sync)
+      found=0
+      for spec in "$MCP_DIR"/*.spec; do
+        [ -f "$spec" ] && found=1
+      done
+      # CLI-managed tools: detected config dir + the CLI on PATH.
+      if [ "$found" -eq 1 ]; then
+        for tool in claude codex gemini qwen amp; do
+          case "$tool" in
+            claude) tdir="$AGENT_HOME/.claude" ;;
+            codex) tdir="$AGENT_HOME/.codex" ;;
+            gemini) tdir="$AGENT_HOME/.gemini" ;;
+            qwen) tdir="$AGENT_HOME/.qwen" ;;
+            amp) tdir="$AGENT_HOME/.config/amp" ;;
+          esac
+          if ! target_selected "$tool"; then
+            echo "$tool: skipped (filtered)"
+            continue
+          fi
+          if [ ! -d "$tdir" ]; then
+            echo "$tool: skipped (not installed)"
+            continue
+          fi
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "$tool: skipped (CLI not on PATH)"
+            continue
+          fi
+          for spec in "$MCP_DIR"/*.spec; do
+            [ -f "$spec" ] || continue
+            name=$(basename "$spec" .spec)
+            mcp_load_spec "$spec"
+            if mcp_push_cli "$tool" "$name"; then
+              echo "$tool: $name configured"
+            else
+              echo "$tool: $name FAILED" >&2
+            fi
+          done
+        done
+      else
+        echo "no MCP servers registered (agent mcp add NAME -- COMMAND)"
+      fi
+      # Dedicated-file tools: rewrite only files agent-sync owns. This runs
+      # even with an empty registry, so removing the last server actually
+      # removes it from owned files instead of serving it forever.
+      if target_selected cursor && [ -d "$AGENT_HOME/.cursor" ]; then
+        mcp_write_owned_file cursor "$AGENT_HOME/.cursor/mcp.json"
+      fi
+      if target_selected windsurf && [ -d "$AGENT_HOME/.codeium" ]; then
+        mcp_write_owned_file windsurf "$AGENT_HOME/.codeium/windsurf/mcp_config.json"
+      fi
+      if target_selected kiro && [ -d "$AGENT_HOME/.kiro" ]; then
+        mcp_write_owned_file kiro "$AGENT_HOME/.kiro/settings/mcp.json"
+      fi
+      echo "note: zed, opencode, goose and continue keep MCP in shared config files;"
+      echo "agent-sync will not edit those. See: agent mcp snippet NAME"
+      ;;
+    snippet)
+      name="${1:-}"
+      if [ -z "$name" ]; then
+        echo "usage: agent mcp snippet NAME" >&2
+        exit 2
+      fi
+      require_safe_name "$name"
+      spec="$MCP_DIR/$name.spec"
+      if [ ! -f "$spec" ]; then
+        echo "agent: unknown MCP server: $name" >&2
+        exit 2
+      fi
+      mcp_load_spec "$spec"
+      echo "# zed (~/.config/zed/settings.json)"
+      printf '"context_servers": { "%s": %s }\n' "$name" "$(mcp_render_json cursor)"
+      echo
+      echo "# opencode (~/.config/opencode/opencode.json)"
+      if [ "$MCP_TYPE" = "stdio" ]; then
+        printf '"mcp": { "%s": { "type": "local", "command": ["%s"' "$name" "$(json_escape "$MCP_CMD")"
+        while IFS= read -r a; do
+          printf ', "%s"' "$(json_escape "$a")"
+        done <"$PRIVATE_TMP/mcp-args"
+        printf ']'
+        if [ -s "$PRIVATE_TMP/mcp-envs" ]; then
+          printf ', "environment": {'
+          first=1
+          while IFS= read -r e; do
+            [ "$first" -eq 1 ] || printf ', '
+            printf '"%s": "%s"' "$(json_escape "${e%%=*}")" "$(json_escape "${e#*=}")"
+            first=0
+          done <"$PRIVATE_TMP/mcp-envs"
+          printf '}'
+        fi
+        printf ' } }\n'
+      else
+        printf '"mcp": { "%s": { "type": "remote", "url": "%s" } }\n' "$name" "$(json_escape "$MCP_URL")"
+      fi
+      echo
+      echo "# goose (~/.config/goose/config.yaml)"
+      echo "extensions:"
+      echo "  $name:"
+      echo "    enabled: true"
+      if [ "$MCP_TYPE" = "stdio" ]; then
+        echo "    type: stdio"
+        echo "    cmd: $MCP_CMD"
+        if [ -s "$PRIVATE_TMP/mcp-args" ]; then
+          echo "    args:"
+          while IFS= read -r a; do
+            echo "      - $a"
+          done <"$PRIVATE_TMP/mcp-args"
+        fi
+        if [ -s "$PRIVATE_TMP/mcp-envs" ]; then
+          echo "    envs:"
+          while IFS= read -r e; do
+            echo "      ${e%%=*}: ${e#*=}"
+          done <"$PRIVATE_TMP/mcp-envs"
+        fi
+      else
+        echo "    type: sse"
+        echo "    uri: $MCP_URL"
+      fi
+      echo
+      echo "# continue (~/.continue/config.yaml)"
+      echo "mcpServers:"
+      echo "  - name: $name"
+      if [ "$MCP_TYPE" = "stdio" ]; then
+        echo "    command: $MCP_CMD"
+        if [ -s "$PRIVATE_TMP/mcp-args" ]; then
+          echo "    args:"
+          while IFS= read -r a; do
+            echo "      - $a"
+          done <"$PRIVATE_TMP/mcp-args"
+        fi
+        if [ -s "$PRIVATE_TMP/mcp-envs" ]; then
+          echo "    env:"
+          while IFS= read -r e; do
+            echo "      ${e%%=*}: ${e#*=}"
+          done <"$PRIVATE_TMP/mcp-envs"
+        fi
+      else
+        echo "    url: $MCP_URL"
+      fi
+      ;;
+    *)
+      echo "usage: agent mcp <add|list|remove|sync|snippet>" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Skills propagation: mirror the canonical skills directory (default
+# ~/.claude/skills) into every agent's user-scope skills directory. The
+# mapping follows the gh skill agent registry (cli/cli
+# internal/skills/registry/registry.go) and each tool's official docs.
+skills_targets() {
+  cat <<EOF
+codex|$AGENT_HOME/.codex|$AGENT_HOME/.codex/skills
+gemini|$AGENT_HOME/.gemini|$AGENT_HOME/.gemini/skills
+qwen|$AGENT_HOME/.qwen|$AGENT_HOME/.qwen/skills
+cursor|$AGENT_HOME/.cursor|$AGENT_HOME/.cursor/skills
+copilot|$AGENT_HOME/.copilot|$AGENT_HOME/.copilot/skills
+continue|$AGENT_HOME/.continue|$AGENT_HOME/.continue/skills
+kiro|$AGENT_HOME/.kiro|$AGENT_HOME/.kiro/skills
+roo|$AGENT_HOME/.roo|$AGENT_HOME/.roo/skills
+opencode|$AGENT_HOME/.config/opencode|$AGENT_HOME/.config/opencode/skills
+zed|$AGENT_HOME/.config/zed|$AGENT_HOME/.agents/skills
+EOF
+}
+
+cmd_skills() {
+  sub="${1:-sync}"
+  case "$sub" in
+    sync) ;;
+    *)
+      echo "usage: agent skills sync" >&2
+      exit 2
+      ;;
+  esac
+  if [ ! -d "$SKILLS_SOURCE" ]; then
+    echo "agent: skills source not found: $SKILLS_SOURCE" >&2
+    echo "set AGENT_SYNC_SKILLS_SOURCE to your canonical skills directory" >&2
+    exit 1
+  fi
+  count=0
+  for skill in "$SKILLS_SOURCE"/*/; do
+    [ -f "$skill/SKILL.md" ] || continue
+    count=$((count + 1))
+  done
+  if [ "$count" -eq 0 ]; then
+    echo "no skills found in $SKILLS_SOURCE (a skill is a directory with SKILL.md)"
+    exit 0
+  fi
+  src_phys=$(physical_path "$SKILLS_SOURCE")
+  if [ -z "$src_phys" ]; then
+    echo "agent: could not resolve the skills source path" >&2
+    exit 1
+  fi
+  while IFS='|' read -r name dir dest; do
+    if ! target_selected "$name"; then
+      echo "$name: skipped (filtered)"
+      continue
+    fi
+    if [ ! -d "$dir" ]; then
+      echo "$name: skipped (not installed)"
+      continue
+    fi
+    mkdir -p "$dest"
+    # Compare PHYSICAL paths: a target dir symlinked at (or inside) the
+    # source would otherwise let the rm -rf below destroy canonical skills.
+    dest_phys=$(physical_path "$dest")
+    if [ -z "$dest_phys" ] || [ "$dest_phys" = "$src_phys" ]; then
+      echo "$name: skipped (skills dir resolves to the source)"
+      continue
+    fi
+    case "$dest_phys/" in
+      "$src_phys"/*)
+        echo "$name: skipped (skills dir resolves inside the source)"
+        continue
+        ;;
+    esac
+    synced=0
+    for skill in "$SKILLS_SOURCE"/*/; do
+      [ -f "$skill/SKILL.md" ] || continue
+      sname=$(basename "$skill")
+      rm -rf "${dest_phys:?}/$sname"
+      cp -R "$skill" "$dest_phys/$sname"
+      synced=$((synced + 1))
+    done
+    echo "$name: $synced skill(s) -> $dest"
+  done <<EOF
+$(skills_targets)
+EOF
+  echo "source: $SKILLS_SOURCE ($count skill(s))"
+}
+
+# ---------------------------------------------------------------------------
+# Hook recipes: verified automation snippets that keep memory fresh without
+# a daemon. Printed, never installed; settings files belong to the user.
+cmd_hooks() {
+  tool="${1:-all}"
+  case "$tool" in
+    claude | all)
+      cat <<'EOF'
+# Claude Code (~/.claude/settings.json): sync when the session ends
+{
+  "hooks": {
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "agent sync --synthesizer deterministic" } ] }
+    ]
+  }
+}
+EOF
+      ;;
+  esac
+  case "$tool" in
+    codex | all)
+      cat <<'EOF'
+
+# Codex CLI (~/.codex/hooks.json): sync when the agent stops
+# (SessionEnd's 3s timeout cap is too tight; Stop is the right event)
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "agent sync --synthesizer deterministic", "timeout": 30 } ] }
+    ]
+  }
+}
+EOF
+      ;;
+  esac
+  case "$tool" in
+    gemini | all)
+      cat <<'EOF'
+
+# Gemini CLI (~/.gemini/settings.json): sync when the session ends
+{
+  "hooks": {
+    "SessionEnd": [
+      { "hooks": [ { "name": "AgentSync", "type": "command", "command": "agent sync --synthesizer deterministic" } ] }
+    ]
+  }
+}
+EOF
+      ;;
+  esac
+  case "$tool" in
+    opencode | all)
+      cat <<'EOF'
+
+# OpenCode (~/.config/opencode/plugins/agent-sync.js): sync when idle
+export const AgentSyncPlugin = async ({ $ }) => ({
+  event: async ({ event }) => {
+    if (event.type === "session.idle") {
+      await $`agent sync --synthesizer deterministic`
+    }
+  },
+})
+EOF
+      ;;
+  esac
+  case "$tool" in
+    all)
+      cat <<'EOF'
+
+# Everything else (no hook mechanism): cron staleness gate
+# 0 9 * * * agent status || agent sync --synthesizer deterministic
+EOF
+      ;;
+    claude | codex | gemini | opencode) ;;
+    *)
+      echo "usage: agent hooks [claude|codex|gemini|opencode]" >&2
+      exit 2
+      ;;
+  esac
 }
 
 case "${1:-help}" in
@@ -877,6 +1815,22 @@ case "${1:-help}" in
   link)
     shift
     cmd_link "$@"
+    ;;
+  pack)
+    shift
+    cmd_pack "$@"
+    ;;
+  mcp)
+    shift
+    cmd_mcp "$@"
+    ;;
+  skills)
+    shift
+    cmd_skills "$@"
+    ;;
+  hooks)
+    shift
+    cmd_hooks "$@"
     ;;
   targets) cmd_targets ;;
   migrate)

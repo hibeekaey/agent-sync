@@ -49,9 +49,17 @@ flows back into the canon.
 | `agent migrate <agent>` | Fold just one agent's stores in, then redistribute |
 | `agent gather [dir]` | Stage all stores into a directory for editing and review |
 | `agent apply [dir] [--dry-run]` | Push edited staged files back to their stores, then run the full sync |
-| `agent link [dir]` | Make one project-scope `AGENTS.md` readable by every agent in a repo |
+| `agent link [dir] [--import]` | Make one project-scope `AGENTS.md` readable by every agent in a repo; `--import` folds the repo's native per-tool configs into it |
 | `agent revert` | Restore `.orig` adoption backups and the synthesized file's `.bak` |
+| `agent pack add owner/repo[@ref][:dir]` | Shareable memory packs, pinned to a commit in a lockfile, folded in on every sync |
+| `agent mcp add/sync` | One MCP server registry pushed to every tool (CLI-driven for claude/codex/gemini/qwen/amp; owned config files for cursor/windsurf/kiro) |
+| `agent skills sync` | Mirror your canonical skills directory into every agent's user-scope skills directory |
+| `agent hooks [tool]` | Print verified automation snippets (Claude/Codex/Gemini hooks, an OpenCode plugin) |
 | `agent targets` | List targets and detection state |
+
+Target filtering: `--only claude,codex` / `--skip qwen` flags on `sync` and
+`apply`; the `AGENT_SYNC_ONLY` / `AGENT_SYNC_SKIP` environment variables
+additionally apply to `status`, `diff`, `skills sync` and `mcp sync`.
 
 The edit loop: `agent gather`, edit the staged files in one place, `agent
 apply`. Your edits land back in each agent's own store, get folded into the
@@ -202,16 +210,35 @@ gh skill install hibeekaey/agent-sync coordinate-agents \
 To install a specific release, add `--pin <tag>`. Without `gh`, copying
 `skills/coordinate-agents/` into your agent's skills directory works too.
 
+## MCP, skills, packs and hooks
+
+Beyond memory, `agent` syncs the rest of your agent setup:
+
+- **MCP servers** (`agent mcp`): register a server once, push it everywhere.
+  Tools with an MCP CLI get it through their own CLI (`claude mcp add-json`,
+  `codex mcp add`, `gemini`/`qwen` `mcp add`, `amp mcp add`); tools with a
+  dedicated MCP file get an agent-sync-owned file (Cursor `~/.cursor/mcp.json`,
+  Windsurf `mcp_config.json`, Kiro `settings/mcp.json`), never touched if you
+  created it yourself. Tools that keep MCP inside shared settings (Zed,
+  OpenCode, Goose, Continue) get a printable snippet instead of risky edits.
+  Every command grammar and file shape was verified against official docs.
+- **Skills** (`agent skills sync`): mirror `~/.claude/skills` (or
+  `AGENT_SYNC_SKILLS_SOURCE`) into every agent's user-scope skills directory,
+  following the `gh skill` agent registry mapping.
+- **Memory packs** (`agent pack`): install shareable markdown packs from any
+  GitHub repo, pinned to a commit in a lockfile, folded into the synthesized
+  file on every sync and cleanly removable.
+- **Hooks** (`agent hooks`): verified snippets that keep memory fresh
+  automatically (Claude Code `SessionEnd`, Codex `Stop`, Gemini `SessionEnd`,
+  an OpenCode plugin), printed for you to paste, never installed behind your
+  back.
+
 ## Roadmap
 
-Researched against the ecosystem's most-requested features; contributions
-welcome on any of these:
-
-- MCP server config propagation across agents
-- Skills / commands / subagents propagation to each agent's native location
-- Hook-based automatic session capture into the canon
-- Shareable, versioned memory packs
-- Per-agent content targeting and overrides
+- Hook-based automatic session capture into the canon (beyond re-sync)
+- Per-agent content overrides (vary sections per tool)
+- Native Windows (PowerShell) port; WSL is supported today
+  ([docs/windows.md](docs/windows.md))
 
 ## Notes
 

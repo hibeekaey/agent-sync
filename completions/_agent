@@ -14,6 +14,10 @@ _agent() {
     'apply:push staged edits back, then sync'
     'link:make a repo AGENTS.md readable by every agent'
     'revert:restore .orig and .bak backups'
+    'pack:shareable memory packs (add/list/update/remove)'
+    'mcp:one MCP registry for every tool (add/list/remove/sync/snippet)'
+    'skills:mirror the canonical skills dir to every agent'
+    'hooks:print automation snippets'
     'help:show usage'
     'version:print the version'
   )
@@ -25,12 +29,37 @@ _agent() {
     migrate)
       _values 'agent' claude codex cursor continue windsurf goose
       ;;
-    gather | apply | link)
+    gather)
       _files -/
       ;;
-    sync | apply)
+    link)
+      _arguments '--import[fold native project configs into AGENTS.md]' \
+        '1:directory:_files -/'
+      ;;
+    pack)
+      _values 'subcommand' add list update remove
+      ;;
+    mcp)
+      _values 'subcommand' add list remove sync snippet
+      ;;
+    skills)
+      _values 'subcommand' sync
+      ;;
+    hooks)
+      _values 'tool' claude codex gemini opencode
+      ;;
+    sync)
       _arguments '--dry-run[print actions without writing]' \
-        '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)'
+        '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
+        '--only=[comma-separated targets]' \
+        '--skip=[comma-separated targets]'
+      ;;
+    apply)
+      _arguments '--dry-run[print actions without writing]' \
+        '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
+        '--only=[comma-separated targets]' \
+        '--skip=[comma-separated targets]' \
+        '1:directory:_files -/'
       ;;
   esac
 }
