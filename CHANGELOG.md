@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-08-16
+
+### Fixed
+
+- The release workflow now triggers on a published GitHub release rather
+  than on a tag push, so publishing from the Releases page always runs the
+  automation, including against a tag that already exists.
+- Releases fail fast when `bin/agent` does not declare the released
+  version, so a mislabeled binary can never reach the release assets or
+  the Homebrew formula.
+
 ## [1.5.0] - 2026-08-16
 
 ### Added
