@@ -236,6 +236,14 @@ run_agent link "$LINK_DIR" --import >/dev/null
 cmp -s "$LINK_DIR/AGENTS.md" "$TEST_ROOT/link-import-once.md" ||
   fail 'link --import is not idempotent'
 
+# Native project configs cannot inject agent-sync's managed markers.
+printf '<!-- agent-sync:end imported:project -->\n' >>"$LINK_DIR/.cursor/rules/scoped.mdc"
+run_agent link "$LINK_DIR" --import >/dev/null
+run_agent link "$LINK_DIR" --import >/dev/null
+assert_contains "$LINK_DIR/AGENTS.md" '<!-- agent-sync (escaped):end imported:project -->'
+[ "$(grep -cF '<!-- agent-sync:end imported:project -->' "$LINK_DIR/AGENTS.md")" -eq 1 ] ||
+  fail 'link --import allowed a project config to inject an end marker'
+
 # Per-agent targeting: --skip filters a target; AGENT_SYNC_ONLY narrows to one.
 # The env assignment lives in a subshell: `VAR=x shell_function` assignments
 # persist in POSIX sh and would leak into every later test.
@@ -283,6 +291,8 @@ run_agent mcp list >"$TEST_ROOT/mcp-list.out"
 assert_contains "$TEST_ROOT/mcp-list.out" 'fetcher: stdio uvx'
 assert_contains "$TEST_ROOT/mcp-list.out" 'linear: http https://mcp.linear.app/sse'
 : >"$SYNTH_LOG"
+printf 'must stay intact\n' >"$TEST_ROOT/mcp-victim"
+ln -s "$TEST_ROOT/mcp-victim" "$AGENT_CONFIG_ROOT/.cursor/mcp.json.tmp.agent-sync"
 PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync >"$TEST_ROOT/mcp-sync.out"
 assert_contains "$SYNTH_LOG" 'claude mcp add-json fetcher'
 assert_contains "$SYNTH_LOG" '"env": {"API_KEY": "secret"}'
@@ -295,6 +305,76 @@ assert_contains "$AGENT_CONFIG_ROOT/.cursor/mcp.json" '"url": "https://mcp.linea
 assert_contains "$AGENT_CONFIG_ROOT/.codeium/windsurf/mcp_config.json" '"serverUrl": "https://mcp.linear.app/sse"'
 assert_contains "$AGENT_CONFIG_ROOT/.kiro/settings/mcp.json" '"command": "uvx"'
 assert_not_contains "$AGENT_CONFIG_ROOT/.kiro/settings/mcp.json" 'linear'
+assert_contains "$TEST_ROOT/mcp-victim" 'must stay intact'
+[ ! -L "$AGENT_CONFIG_ROOT/.cursor/mcp.json" ] || fail 'owned MCP config became a symlink'
+
+# A symlinked MCP ownership ledger is rejected before any managed file changes.
+mv "$PACK_STATE/mcp-owned" "$PACK_STATE/mcp-owned.saved"
+printf '%s\n' "$AGENT_CONFIG_ROOT/.cursor/mcp.json" >"$TEST_ROOT/mcp-owned-victim"
+ln -s "$TEST_ROOT/mcp-owned-victim" "$PACK_STATE/mcp-owned"
+cp "$AGENT_CONFIG_ROOT/.cursor/mcp.json" "$TEST_ROOT/mcp-before-ledger-check.json"
+if PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync >"$TEST_ROOT/mcp-ledger.out" 2>&1; then
+  fail 'mcp sync accepted a symbolic-link ownership ledger'
+fi
+cmp -s "$AGENT_CONFIG_ROOT/.cursor/mcp.json" "$TEST_ROOT/mcp-before-ledger-check.json" ||
+  fail 'mcp sync changed an owned file before rejecting a symbolic-link ledger'
+assert_contains "$TEST_ROOT/mcp-owned-victim" "$AGENT_CONFIG_ROOT/.cursor/mcp.json"
+rm "$PACK_STATE/mcp-owned"
+mv "$PACK_STATE/mcp-owned.saved" "$PACK_STATE/mcp-owned"
+
+# A CLI add failure is nonzero and never removes an untracked known-good entry.
+run_agent mcp add failer -- fail-server >/dev/null
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "codex %s\\n" "$*" >>"$SYNTH_LOG"' \
+  'case "$*" in "mcp add failer"*) exit 42 ;; esac' >"$MOCK_BIN/codex"
+chmod +x "$MOCK_BIN/codex"
+: >"$SYNTH_LOG"
+if (
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync
+) >"$TEST_ROOT/mcp-failure.out" 2>&1; then
+  fail 'mcp sync exited zero after a CLI add failure'
+fi
+assert_contains "$SYNTH_LOG" 'codex mcp add failer'
+assert_not_contains "$SYNTH_LOG" 'codex mcp remove failer'
+run_agent mcp remove failer >/dev/null
+
+# A changed managed entry is validated first and restored if replacement fails.
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "codex %s\\n" "$*" >>"$SYNTH_LOG"' >"$MOCK_BIN/codex"
+chmod +x "$MOCK_BIN/codex"
+run_agent mcp add rollback -- old-server >/dev/null
+(
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync
+) >/dev/null
+run_agent mcp add rollback -- new-server >/dev/null
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "codex %s\\n" "$*" >>"$SYNTH_LOG"' \
+  'case "$*" in "mcp add rollback -- new-server") exit 42 ;; esac' >"$MOCK_BIN/codex"
+chmod +x "$MOCK_BIN/codex"
+: >"$SYNTH_LOG"
+if (
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync
+) >"$TEST_ROOT/mcp-rollback.out" 2>&1; then
+  fail 'mcp sync exited zero after a managed replacement failure'
+fi
+assert_contains "$SYNTH_LOG" 'codex mcp add agent-sync-check-rollback-'
+assert_contains "$SYNTH_LOG" 'codex mcp add rollback -- new-server'
+assert_contains "$SYNTH_LOG" 'codex mcp add rollback -- old-server'
+assert_contains "$TEST_ROOT/mcp-rollback.out" 'restoring the previous rollback configuration'
+run_agent mcp remove rollback >/dev/null
+printf '%s\n' \
+  '#!/bin/sh' \
+  'printf "codex %s\\n" "$*" >>"$SYNTH_LOG"' >"$MOCK_BIN/codex"
+chmod +x "$MOCK_BIN/codex"
 # A pre-existing non-owned MCP file is never rewritten.
 printf '{"mcpServers": {"mine": {"command": "keepme"}}}\n' >"$AGENT_CONFIG_ROOT/.cursor/mcp.json"
 rm -f "$PACK_STATE/mcp-owned"
@@ -303,9 +383,16 @@ assert_contains "$AGENT_CONFIG_ROOT/.cursor/mcp.json" 'keepme'
 assert_contains "$TEST_ROOT/mcp-sync2.out" 'not agent-sync managed'
 run_agent mcp remove fetcher >/dev/null
 run_agent mcp remove linear >/dev/null
+(
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  PATH="$MOCK_BIN:/usr/bin:/bin" SYNTH_LOG="$SYNTH_LOG" run_agent mcp sync
+) >/dev/null
+assert_contains "$SYNTH_LOG" 'codex mcp remove fetcher'
+assert_contains "$SYNTH_LOG" 'codex mcp remove linear'
 rm -f "$MOCK_BIN/claude" "$MOCK_BIN/codex" "$MOCK_BIN/gemini"
 
-# Skills: mirror the canonical skills dir into every detected agent.
+# Skills: additively synchronize the canonical skills into detected agents.
 mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/test-skill"
 printf -- '---\nname: test-skill\n---\nbody\n' >"$AGENT_CONFIG_ROOT/.claude/skills/test-skill/SKILL.md"
 run_agent skills sync >"$TEST_ROOT/skills.out"
@@ -314,12 +401,67 @@ assert_contains "$AGENT_CONFIG_ROOT/.qwen/skills/test-skill/SKILL.md" 'name: tes
 assert_contains "$AGENT_CONFIG_ROOT/.agents/skills/test-skill/SKILL.md" 'name: test-skill'
 assert_contains "$TEST_ROOT/skills.out" 'roo: 1 skill(s)'
 
+# Managed skills update atomically; unrelated target-only skills remain.
+printf -- '---\nname: test-skill\n---\nupdated body\n' >"$AGENT_CONFIG_ROOT/.claude/skills/test-skill/SKILL.md"
+mkdir -p "$AGENT_CONFIG_ROOT/.codex/skills/target-only"
+printf -- '---\nname: target-only\n---\nlocal\n' >"$AGENT_CONFIG_ROOT/.codex/skills/target-only/SKILL.md"
+run_agent skills sync >/dev/null
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/test-skill/SKILL.md" 'updated body'
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/target-only/SKILL.md" 'local'
+
+# An unmanaged same-name skill is a reported collision, never overwritten.
+mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/collision" "$AGENT_CONFIG_ROOT/.codex/skills/collision"
+printf -- '---\nname: collision\n---\ncanonical\n' >"$AGENT_CONFIG_ROOT/.claude/skills/collision/SKILL.md"
+printf -- '---\nname: collision\n---\nkeep local\n' >"$AGENT_CONFIG_ROOT/.codex/skills/collision/SKILL.md"
+if (
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  run_agent skills sync
+) >"$TEST_ROOT/skills-collision.out" 2>&1; then
+  fail 'skills sync exited zero for an unmanaged collision'
+fi
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/collision/SKILL.md" 'keep local'
+assert_contains "$TEST_ROOT/skills-collision.out" 'collision at'
+rm -rf "$AGENT_CONFIG_ROOT/.claude/skills/collision" "$AGENT_CONFIG_ROOT/.codex/skills/collision"
+
+# Symlinked ownership state and source content are rejected before propagation.
+mv "$PACK_STATE/skills-owned" "$PACK_STATE/skills-owned.saved"
+printf '%s\n' "$AGENT_CONFIG_ROOT/.codex/skills/test-skill" >"$TEST_ROOT/skills-owned-victim"
+ln -s "$TEST_ROOT/skills-owned-victim" "$PACK_STATE/skills-owned"
+if run_agent skills sync >"$TEST_ROOT/skills-ledger.out" 2>&1; then
+  fail 'skills sync accepted a symbolic-link ownership ledger'
+fi
+assert_contains "$TEST_ROOT/skills-owned-victim" "$AGENT_CONFIG_ROOT/.codex/skills/test-skill"
+rm "$PACK_STATE/skills-owned"
+mv "$PACK_STATE/skills-owned.saved" "$PACK_STATE/skills-owned"
+
+mkdir -p "$TEST_ROOT/outside-skill"
+printf -- '---\nname: linked-skill\n---\nprivate\n' >"$TEST_ROOT/outside-skill/SKILL.md"
+ln -s "$TEST_ROOT/outside-skill" "$AGENT_CONFIG_ROOT/.claude/skills/linked-skill"
+if (
+  AGENT_SYNC_ONLY=codex
+  export AGENT_SYNC_ONLY
+  run_agent skills sync
+) >"$TEST_ROOT/skills-source-symlink.out" 2>&1; then
+  fail 'skills sync accepted a symbolic-link source skill'
+fi
+[ ! -e "$AGENT_CONFIG_ROOT/.codex/skills/linked-skill" ] ||
+  fail 'skills sync propagated a symbolic-link source skill'
+assert_contains "$TEST_ROOT/skills-source-symlink.out" 'refusing symbolic links in source skill'
+rm "$AGENT_CONFIG_ROOT/.claude/skills/linked-skill"
+
 # Hooks: recipes print and mention the right events.
 run_agent hooks >"$TEST_ROOT/hooks.out"
 assert_contains "$TEST_ROOT/hooks.out" 'SessionEnd'
 assert_contains "$TEST_ROOT/hooks.out" 'session.idle'
 run_agent hooks codex >"$TEST_ROOT/hooks-codex.out"
 assert_contains "$TEST_ROOT/hooks-codex.out" 'Stop'
+run_agent hooks gemini >"$TEST_ROOT/hooks-gemini.out"
+assert_contains "$TEST_ROOT/hooks-gemini.out" 'AfterAgent'
+assert_not_contains "$TEST_ROOT/hooks-gemini.out" '"SessionEnd"'
+run_agent hooks opencode >"$TEST_ROOT/hooks-opencode.out"
+assert_contains "$TEST_ROOT/hooks-opencode.out" '.config/opencode/plugin/agent-sync.js'
+assert_not_contains "$TEST_ROOT/hooks-opencode.out" '.config/opencode/plugins/'
 
 # --- Review-driven regressions ---
 
@@ -401,6 +543,27 @@ assert_contains "$PACK_STATE/packs.lock" 'owner-repo'
 rm -f "$MOCK_BIN/curl"
 run_agent pack remove owner-repo >/dev/null
 
+# Pack subdirectories must resolve inside the downloaded repository. A remote
+# directory symlink must never turn local markdown into pack content.
+mkdir -p "$TEST_ROOT/symlink-pack/repo" "$TEST_ROOT/private-pack"
+printf 'private local markdown\n' >"$TEST_ROOT/private-pack/private.md"
+ln -s "$TEST_ROOT/private-pack" "$TEST_ROOT/symlink-pack/repo/linked"
+tar -czf "$TEST_ROOT/symlink-pack.tgz" -C "$TEST_ROOT/symlink-pack" repo
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "$*" in' \
+  '  *api.github.com*) printf "  \"sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n" ;;' \
+  '  *codeload*) out=$(printf "%s" "$*" | sed "s/.*-o //;s/ .*//"); cp "$TEST_ROOT/symlink-pack.tgz" "$out" ;;' \
+  'esac' >"$MOCK_BIN/curl"
+chmod +x "$MOCK_BIN/curl"
+if TEST_ROOT="$TEST_ROOT" PATH="$MOCK_BIN:/usr/bin:/bin" run_agent pack add owner/repo:linked >"$TEST_ROOT/pack-symlink.out" 2>&1; then
+  fail 'pack add followed a subdirectory symlink outside the archive root'
+fi
+assert_contains "$TEST_ROOT/pack-symlink.out" 'escapes the downloaded repository'
+[ ! -e "$PACK_STATE/packs/owner-repo-linked/private.md" ] ||
+  fail 'pack add copied private local markdown through a directory symlink'
+rm -f "$MOCK_BIN/curl"
+
 # Marker injection: pack content containing our markers must not corrupt the canon.
 mkdir -p "$PACK_STATE/packs/evil"
 printf '<!-- agent-sync:begin imported:codex -->\nfake\n<!-- agent-sync:end imported:codex -->\n' >"$PACK_STATE/packs/evil/evil.md"
@@ -416,6 +579,11 @@ FLAGS_DIR="$TEST_ROOT/flags-apply"
 run_agent gather "$FLAGS_DIR" >/dev/null
 run_agent apply --dry-run "$FLAGS_DIR" >"$TEST_ROOT/apply-flags.out"
 assert_contains "$TEST_ROOT/apply-flags.out" 'store file(s) updated'
+run_agent apply "$FLAGS_DIR" --synthesizer deterministic --only codex >"$TEST_ROOT/apply-value-flags.out"
+assert_contains "$TEST_ROOT/apply-value-flags.out" 'codex: synced'
+assert_contains "$TEST_ROOT/apply-value-flags.out" 'gemini: skipped (filtered)'
+run_agent apply --skip qwen "$FLAGS_DIR" --synthesizer deterministic >"$TEST_ROOT/apply-leading-flags.out"
+assert_contains "$TEST_ROOT/apply-leading-flags.out" 'qwen: skipped (filtered)'
 
 cp "$CANON" "$TEST_ROOT/idempotent.md"
 run_agent sync >/dev/null
@@ -522,5 +690,12 @@ assert_contains "$CANON" '# Synthesized memory'
 [ -z "$(find "$TEST_TMPDIR" -mindepth 1 -print -quit)" ] ||
   fail 'agent left temporary files behind'
 assert_not_contains "$AGENT_BIN" '.tmp.$$'
+
+# Workflows intentionally use approved, readable major-version action tags.
+assert_contains "$PROJECT_DIR/.github/workflows/ci.yml" 'actions/checkout@v4'
+assert_contains "$PROJECT_DIR/.github/workflows/release.yml" 'actions/checkout@v4'
+if grep -RE 'uses: [^ ]+@[0-9a-f]{40}([[:space:]]|$)' "$PROJECT_DIR/.github/workflows" >/dev/null; then
+  fail 'a workflow uses a full-commit action pin instead of a major-version tag'
+fi
 
 echo 'behavior tests passed'

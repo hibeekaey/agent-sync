@@ -4,7 +4,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/hibeekaey/agent-sync/main/install.sh | sh
 #   PREFIX=~/.local sh install.sh
-#   AGENT_SYNC_VERSION=v1.4.0 sh install.sh
+#   AGENT_SYNC_VERSION=v1.5.2 sh install.sh
 set -eu
 
 main() {

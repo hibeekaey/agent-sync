@@ -4,8 +4,8 @@ Thanks for your interest in agent-sync.
 
 ## Ground rules
 
-- `bin/agent` is POSIX sh: no bashisms, no dependencies beyond coreutils,
-  and it must behave identically on macOS and Linux. `shellcheck` must pass.
+- `bin/agent` is POSIX sh: no bashisms or language-runtime dependencies, and
+  it must behave identically on macOS and Linux. `shellcheck` must pass.
 - Never add a dependency to satisfy tooling; the zero-dependency install is
   the point.
 - New sync targets belong in the `targets()` table; new memory sources
@@ -57,3 +57,5 @@ makes it discoverable.
 - A behavior change needs a regression test.
 - CI runs shellcheck (Linux) and the behavioral suite on ubuntu and macos; both
   must be green.
+- GitHub Actions must use approved major-version tags such as `@v4`, not
+  full-commit SHA pins.

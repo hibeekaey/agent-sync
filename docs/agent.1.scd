@@ -13,7 +13,7 @@ agent - synchronize agent memory across AI coding agents
 *agent* doctor++
 *agent* migrate AGENT++
 *agent* gather [DIR]++
-*agent* apply [DIR] [--synthesizer MODE] [--dry-run]++
+*agent* apply [DIR] [--synthesizer MODE] [--dry-run] [--only LIST] [--skip LIST]++
 *agent* link [DIR] [--import]++
 *agent* revert++
 *agent* pack <add|list|update|remove>++
@@ -89,16 +89,21 @@ installed agent's global instructions slot.
 	the tool's own CLI (claude, codex, gemini, qwen, amp) or writes an
 	agent-sync-owned dedicated config file (cursor, windsurf, kiro).
 	Shared config files (zed, opencode, goose, continue) are never edited;
-	*snippet* prints what to paste.
+	*snippet* prints what to paste, including configured environment values
+	and headers. Successfully applied CLI entries are tracked so updates can
+	be validated and rolled back, and registry removals are propagated on the
+	next sync. Entries installed before v1.5.2 may need one manual removal.
 
 *skills* sync
-	Mirror the canonical skills directory (default ~/.claude/skills,
-	override with AGENT_SYNC_SKILLS_SOURCE) into every agent's user-scope
-	skills directory, per the gh-skill agent registry mapping.
+	Additively synchronize the canonical skills directory (default
+	~/.claude/skills, override with AGENT_SYNC_SKILLS_SOURCE) into every
+	agent's user-scope skills directory, per the gh-skill agent registry
+	mapping. Target-only skills remain. Unmanaged same-name collisions are
+	left untouched and make the command exit nonzero.
 
 *hooks* [TOOL]
 	Print verified automation snippets that keep memory fresh: Claude Code
-	SessionEnd, Codex Stop, Gemini SessionEnd, an OpenCode plugin, and a
+	SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
 	cron fallback. Printed, never installed.
 
 # ENVIRONMENT
@@ -114,6 +119,10 @@ installed agent's global instructions slot.
 	Synthesis mode (auto, claude, codex, deterministic) or a custom
 	command that reads a merge prompt on stdin and prints the merged
 	document on stdout.
+
+*AGENT_SYNC_ONLY*, *AGENT_SYNC_SKIP*
+	Comma-separated target filters used by sync, apply, status, diff, MCP sync
+	and skills sync.
 
 # SEE ALSO
 
