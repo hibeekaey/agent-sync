@@ -39,8 +39,13 @@ After a sync, every agent knows what every agent has learned.
 | `agent sync` | The full round trip: gather, synthesize, redistribute |
 | `agent status` | Parity check; exit 1 if any agent is stale (cron-friendly) |
 | `agent migrate <agent>` | Fold just one agent's stores in, then redistribute |
-| `agent gather [dir]` | Stage all stores into a directory for manual review |
+| `agent gather [dir]` | Stage all stores into a directory for editing and review |
+| `agent apply [dir]` | Push edited staged files back to their stores, then run the full sync |
 | `agent targets` | List targets and detection state |
+
+The edit loop: `agent gather`, edit the staged files in one place, `agent
+apply`. Your edits land back in each agent's own store, get folded into the
+synthesized file, and are redistributed to every agent.
 
 ## Install
 

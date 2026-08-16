@@ -15,8 +15,9 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 SRC="${AGENT_SYNC_SOURCE:-$HOME/.claude/CLAUDE.md}"
+TAB=$(printf '\t')
 
 usage() {
   cat <<EOF
@@ -31,8 +32,14 @@ Usage:
   agent migrate AGENT    fold just one agent's memory stores in, then
                          redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
-                         (default: ./agent-memories) for manual review
+                         (default: ./agent-memories) for editing and review
+  agent apply [DIR]      push edited staged files from a gather DIR back to
+                         their original stores, then run the full sync
   agent help             this text
+
+The edit loop: agent gather, edit the staged files, agent apply. Your edits
+land in the original stores, get folded into the synthesized file, and are
+redistributed to every agent.
 
 Agents with readable memory stores: claude, codex, cursor, continue, windsurf.
 
@@ -314,19 +321,56 @@ cmd_migrate() {
 cmd_gather() {
   dest="${1:-./agent-memories}"
   mkdir -p "$dest"
+  # The manifest maps each staged name to its source path so `apply` can
+  # push edits back exactly where they came from.
+  manifest="$dest/.agent-manifest"
+  : >"$manifest"
   gathered=0
   list="${TMPDIR:-/tmp}/agent-gather-list.$$"
   for name in claude codex cursor continue windsurf; do
     sources_for "$name" >"$list"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      cp "$f" "$dest/${name}__$(basename "$(dirname "$f")")__$(basename "$f")"
+      staged="${name}__$(basename "$(dirname "$f")")__$(basename "$f")"
+      if [ -e "$dest/$staged" ]; then
+        n=2
+        while [ -e "$dest/${n}__$staged" ]; do n=$((n + 1)); done
+        staged="${n}__$staged"
+      fi
+      cp "$f" "$dest/$staged"
+      printf '%s\t%s\n' "$staged" "$f" >>"$manifest"
       gathered=$((gathered + 1))
     done <"$list"
   done
   rm -f "$list"
   echo "gathered $gathered memory file(s) into $dest"
+  echo "edit the staged files, then push edits everywhere with: agent apply $dest"
   echo "note: gathered files can contain private context; do not commit them"
+}
+
+cmd_apply() {
+  dir="${1:-./agent-memories}"
+  manifest="$dir/.agent-manifest"
+  if [ ! -f "$manifest" ]; then
+    echo "agent: $dir is not a gather directory (missing .agent-manifest)" >&2
+    echo "stage stores first with: agent gather $dir" >&2
+    exit 1
+  fi
+  require_src
+  updated=0
+  while IFS="$TAB" read -r staged orig; do
+    [ -n "$staged" ] && [ -n "$orig" ] || continue
+    s="$dir/$staged"
+    [ -f "$s" ] || continue
+    if [ ! -f "$orig" ] || [ "$(sum "$s")" != "$(sum "$orig")" ]; then
+      mkdir -p "$(dirname "$orig")"
+      cp "$s" "$orig"
+      echo "updated store: $orig"
+      updated=$((updated + 1))
+    fi
+  done <"$manifest"
+  echo "$updated store file(s) updated from $dir"
+  cmd_sync
 }
 
 case "${1:-help}" in
@@ -340,6 +384,10 @@ case "${1:-help}" in
   gather)
     shift
     cmd_gather "$@"
+    ;;
+  apply)
+    shift
+    cmd_apply "$@"
     ;;
   version | --version | -v) echo "agent v$VERSION" ;;
   help | --help | -h) usage ;;

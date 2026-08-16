@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-16
+
+### Added
+
+- `agent apply [DIR]`: push edited staged files from a gather directory
+  back to their original stores, then run the full sync, completing the
+  gather, edit, apply loop.
+- `gather` now writes a `.agent-manifest` mapping each staged file to its
+  source path (with collision-safe staged names), which is what makes
+  `apply` possible.
+
 ## [1.1.0] - 2026-08-16
 
 ### Changed
