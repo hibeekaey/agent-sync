@@ -57,8 +57,9 @@ flows back into the canon.
 | `agent hooks [tool]` | Print verified automation snippets (Claude/Codex/Gemini hooks, an OpenCode plugin) |
 | `agent targets` | List targets and detection state |
 
-Target filtering everywhere: `--only claude,codex` / `--skip qwen` or the
-`AGENT_SYNC_ONLY` / `AGENT_SYNC_SKIP` environment variables.
+Target filtering: `--only claude,codex` / `--skip qwen` flags on `sync` and
+`apply`; the `AGENT_SYNC_ONLY` / `AGENT_SYNC_SKIP` environment variables
+additionally apply to `status`, `diff`, `skills sync` and `mcp sync`.
 
 The edit loop: `agent gather`, edit the staged files in one place, `agent
 apply`. Your edits land back in each agent's own store, get folded into the

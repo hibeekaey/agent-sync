@@ -36,10 +36,14 @@ jobs:
             exit 0
           fi
           URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          SHA=$(curl -fsSL "$URL" | sha256sum | cut -d' ' -f1)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/hibeekaey/homebrew-tap.git" tap
           cd tap
           sed -i "s|url \".*\"|url \"$URL\"|; s|sha256 \".*\"|sha256 \"$SHA\"|" Formula/agent-sync.rb
+          if git diff --quiet; then
+            echo "formula already current; nothing to bump"
+            exit 0
+          fi
           git config user.name "agent-sync-release"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "chore: agent-sync ${GITHUB_REF_NAME#v}"

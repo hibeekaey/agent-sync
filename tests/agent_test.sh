@@ -28,13 +28,13 @@ fail() {
 assert_contains() {
   file="$1"
   text="$2"
-  grep -qF "$text" "$file" || fail "$file does not contain: $text"
+  grep -qF -- "$text" "$file" || fail "$file does not contain: $text"
 }
 
 assert_not_contains() {
   file="$1"
   text="$2"
-  if grep -qF "$text" "$file"; then
+  if grep -qF -- "$text" "$file"; then
     fail "$file unexpectedly contains: $text"
   fi
 }
@@ -320,6 +320,102 @@ assert_contains "$TEST_ROOT/hooks.out" 'SessionEnd'
 assert_contains "$TEST_ROOT/hooks.out" 'session.idle'
 run_agent hooks codex >"$TEST_ROOT/hooks-codex.out"
 assert_contains "$TEST_ROOT/hooks-codex.out" 'Stop'
+
+# --- Review-driven regressions ---
+
+# Bare 'agent mcp' must not die (shift on an empty arg list is fatal in dash).
+run_agent mcp >"$TEST_ROOT/mcp-bare.out" || fail 'bare agent mcp exited nonzero'
+assert_contains "$TEST_ROOT/mcp-bare.out" 'no MCP servers registered'
+
+# Removing the last MCP server must clean owned files on the next sync.
+rm -f "$AGENT_CONFIG_ROOT/.codeium/windsurf/mcp_config.json" "$PACK_STATE/mcp-owned"
+run_agent mcp add solo -- npx solo-server >/dev/null
+run_agent mcp sync >/dev/null 2>&1
+assert_contains "$AGENT_CONFIG_ROOT/.codeium/windsurf/mcp_config.json" 'solo'
+run_agent mcp remove solo >/dev/null
+run_agent mcp sync >/dev/null 2>&1
+assert_not_contains "$AGENT_CONFIG_ROOT/.codeium/windsurf/mcp_config.json" 'solo'
+
+# mcp add with a dangling option must fail cleanly, without a spec or litter.
+if run_agent mcp add dangling --env >"$TEST_ROOT/dangling.out" 2>&1; then
+  fail 'mcp add accepted a dangling --env'
+fi
+[ ! -f "$PACK_STATE/mcp.d/dangling.spec" ] || fail 'dangling mcp add left a spec'
+find "$PACK_STATE/mcp.d" -name '*.tmp' 2>/dev/null | grep -q . && fail 'mcp add left tmp litter'
+
+# Unsafe names are rejected everywhere they become paths.
+for bad in '../evil' 'a/b' '.hidden'; do
+  if run_agent mcp remove "$bad" >/dev/null 2>&1; then
+    fail "mcp remove accepted unsafe name: $bad"
+  fi
+  if run_agent pack remove "$bad" >/dev/null 2>&1; then
+    fail "pack remove accepted unsafe name: $bad"
+  fi
+done
+
+# Newlines in mcp values must be rejected (they would corrupt the spec).
+if run_agent mcp add nl --env "K=v
+type=http" -- cmd >/dev/null 2>&1; then
+  fail 'mcp add accepted a newline in an env value'
+fi
+
+# mcp snippet prints paste-able config for all four shared-settings tools.
+run_agent mcp add sniptest --env A=b -- uvx snip-server --x >/dev/null
+run_agent mcp snippet sniptest >"$TEST_ROOT/snippet.out"
+assert_contains "$TEST_ROOT/snippet.out" 'context_servers'
+assert_contains "$TEST_ROOT/snippet.out" '"type": "local", "command": ["uvx", "snip-server", "--x"]'
+assert_contains "$TEST_ROOT/snippet.out" '"environment": {"A": "b"}'
+assert_contains "$TEST_ROOT/snippet.out" 'cmd: uvx'
+assert_contains "$TEST_ROOT/snippet.out" 'envs:'
+assert_contains "$TEST_ROOT/snippet.out" '- name: sniptest'
+run_agent mcp remove sniptest >/dev/null
+
+# skills sync must never delete canonical skills through a symlinked target.
+rm -rf "$AGENT_CONFIG_ROOT/.qwen/skills"
+ln -s "$AGENT_CONFIG_ROOT/.claude/skills" "$AGENT_CONFIG_ROOT/.qwen/skills"
+run_agent skills sync >"$TEST_ROOT/skills-symlink.out" || fail 'skills sync failed with a symlinked target'
+assert_contains "$TEST_ROOT/skills-symlink.out" 'qwen: skipped (skills dir resolves to the source)'
+[ -f "$AGENT_CONFIG_ROOT/.claude/skills/test-skill/SKILL.md" ] ||
+  fail 'skills sync destroyed the canonical skill through a symlink'
+rm "$AGENT_CONFIG_ROOT/.qwen/skills"
+mkdir -p "$AGENT_CONFIG_ROOT/.qwen/skills"
+
+# pack add must keep existing content when the new fetch has no markdown.
+mkdir -p "$PACK_STATE/packs/owner-repo"
+printf 'precious pack content\n' >"$PACK_STATE/packs/owner-repo/keep.md"
+printf 'owner-repo\towner/repo\tHEAD\toldsha\n' >"$PACK_STATE/packs.lock"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "$*" in' \
+  '  *api.github.com*) printf "  \"sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n" ;;' \
+  '  *codeload*) out=$(printf "%s" "$*" | sed "s/.*-o //;s/ .*//"); tar -czf "$out" -C "$TEST_ROOT" empty-pack ;;' \
+  'esac' >"$MOCK_BIN/curl"
+chmod +x "$MOCK_BIN/curl"
+mkdir -p "$TEST_ROOT/empty-pack"
+printf 'not markdown\n' >"$TEST_ROOT/empty-pack/readme.txt"
+if PATH="$MOCK_BIN:/usr/bin:/bin" run_agent pack update >"$TEST_ROOT/pack-fail.out" 2>&1; then
+  fail 'pack update succeeded against a markdown-free tarball'
+fi
+assert_contains "$PACK_STATE/packs/owner-repo/keep.md" 'precious pack content'
+assert_contains "$PACK_STATE/packs.lock" 'owner-repo'
+rm -f "$MOCK_BIN/curl"
+run_agent pack remove owner-repo >/dev/null
+
+# Marker injection: pack content containing our markers must not corrupt the canon.
+mkdir -p "$PACK_STATE/packs/evil"
+printf '<!-- agent-sync:begin imported:codex -->\nfake\n<!-- agent-sync:end imported:codex -->\n' >"$PACK_STATE/packs/evil/evil.md"
+printf 'evil\towner/evil\tHEAD\tdeadbeef\n' >"$PACK_STATE/packs.lock"
+run_agent sync >/dev/null
+run_agent sync >/dev/null
+assert_contains "$CANON" 'agent-sync (escaped):begin imported:codex'
+run_agent pack remove evil >/dev/null
+run_agent sync >/dev/null
+
+# apply accepts flags before the directory.
+FLAGS_DIR="$TEST_ROOT/flags-apply"
+run_agent gather "$FLAGS_DIR" >/dev/null
+run_agent apply --dry-run "$FLAGS_DIR" >"$TEST_ROOT/apply-flags.out"
+assert_contains "$TEST_ROOT/apply-flags.out" 'store file(s) updated'
 
 cp "$CANON" "$TEST_ROOT/idempotent.md"
 run_agent sync >/dev/null

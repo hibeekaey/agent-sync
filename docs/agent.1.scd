@@ -69,8 +69,9 @@ installed agent's global instructions slot.
 	repository: seeds AGENTS.md, bridges CLAUDE.md via an @AGENTS.md
 	import, and configures Gemini CLI's context.fileName. With *--import*,
 	folds the repository's native per-tool configs (.cursor/rules,
-	.clinerules, .windsurfrules, copilot-instructions, .roo/rules,
-	.goosehints) verbatim into AGENTS.md under a managed marker.
+	.cursorrules, .clinerules, .windsurfrules, copilot-instructions,
+	.roo/rules, .goosehints) verbatim into AGENTS.md under a managed
+	marker.
 
 *revert*
 	Restore targets from their .orig adoption backups and the synthesized

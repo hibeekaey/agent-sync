@@ -29,8 +29,12 @@ _agent() {
     migrate)
       _values 'agent' claude codex cursor continue windsurf goose
       ;;
-    gather | apply | link)
+    gather)
       _files -/
+      ;;
+    link)
+      _arguments '--import[fold native project configs into AGENTS.md]' \
+        '1:directory:_files -/'
       ;;
     pack)
       _values 'subcommand' add list update remove
@@ -44,11 +48,18 @@ _agent() {
     hooks)
       _values 'tool' claude codex gemini opencode
       ;;
-    sync | apply)
+    sync)
       _arguments '--dry-run[print actions without writing]' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]'
+      ;;
+    apply)
+      _arguments '--dry-run[print actions without writing]' \
+        '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
+        '--only=[comma-separated targets]' \
+        '--skip=[comma-separated targets]' \
+        '1:directory:_files -/'
       ;;
   esac
 }
