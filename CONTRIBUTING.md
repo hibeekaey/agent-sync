@@ -77,11 +77,15 @@ release fails rather than tagging history backwards, and a version already
 released is a no-op rather than an error.
 
 Do not create releases by hand. Assets must be attached before publication,
-because GitHub's immutable releases freeze a release's tag and assets the
-moment it goes public. A hand-published release ships with no binary, no
-checksums and no attestation and cannot be repaired in place; the
-`release-guard` workflow fails loudly when it happens, and the fix is to
-delete that release and let the workflow redo it.
+because immutable releases are enabled: publishing freezes the release's tag
+and assets. A hand-published release ships with no binary, no checksums and
+no attestation, and cannot be repaired in place.
+
+**Recovering from a broken release: bump to the next patch version and
+merge. Never delete the release and reuse its tag.** GitHub retires the tag
+name of a deleted immutable release permanently, even across repository
+deletion and recreation, so deleting burns that version number forever. The
+`release-guard` workflow fails loudly and says the same thing.
 
 The bundled skill rides the same release tags: `gh skill install` resolves
 `--pin vX.Y.Z` against them directly, so the skill needs no release of its

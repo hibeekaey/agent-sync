@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.5] - 2026-08-17
+
+### Fixed
+
+- Recovery guidance for a broken release was wrong and would have destroyed
+  a version number: GitHub permanently retires the tag name of a deleted
+  immutable release, so `release-guard` and CONTRIBUTING now say to bump to
+  the next patch instead of deleting and retrying the tag.
+
+### Changed
+
+- The weekly compatibility job covers every CLI grammar `agent mcp` depends
+  on. Qwen Code and Amp were named in the contract but never checked;
+  `docs/compatibility.md` now tabulates exactly what is depended on per CLI
+  and why the file-written and snippet-only tools have no grammar
+  dependency at all.
+
 ## [1.5.4] - 2026-08-17
 
 ### Changed

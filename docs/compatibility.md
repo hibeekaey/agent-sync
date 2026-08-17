@@ -27,13 +27,25 @@ A tool that moves its path breaks quietly: agent-sync writes a file nobody
 reads. Guard: `agent doctor` reports what it detected, and `agent targets`
 lists every path so a change is visible.
 
-**CLI flag grammar.** `agent mcp sync` executes other vendors' CLIs
-(`claude mcp add-json --scope`, `codex mcp add --url`, `gemini mcp add
---transport`, and the Qwen and Amp equivalents). A tool that changes its
-flags breaks loudly, mid-run. Guard: the weekly `compat` workflow installs
-those CLIs and asserts the flags still exist in their help output, so a
-break surfaces as a failed scheduled run rather than a user's broken
-configuration.
+**CLI flag grammar.** `agent mcp sync` executes other vendors' CLIs. A tool
+that changes its flags breaks loudly, mid-run. Guard: the weekly `compat`
+workflow installs each CLI and asserts the grammar agent-sync depends on
+still exists in its help output, so a break surfaces as a failed scheduled
+run rather than a user's broken configuration.
+
+| CLI | What agent-sync depends on | Checked weekly |
+| --- | --- | --- |
+| Claude Code | `mcp add-json --scope` | Yes |
+| Codex | `mcp add --url`, `--env` | Yes |
+| Gemini CLI | `mcp add --transport`, `-s`, `-e` | Yes |
+| Qwen Code | Same grammar as Gemini CLI | Yes |
+| Amp | `mcp add` with positional arguments only | Yes, that the subcommand exists |
+
+Cursor, Windsurf and Kiro have no MCP add command, so agent-sync writes
+their config files directly; those are path dependencies, not grammar ones.
+Zed, OpenCode, Goose and Continue keep MCP inside shared settings that
+agent-sync never edits, so it prints a snippet instead and has no grammar
+dependency on them at all.
 
 Neither contract is ours to control. Where a vendor removes a capability we
 depend on, the affected target is deprecated per the policy below.

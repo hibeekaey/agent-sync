@@ -2,8 +2,10 @@ name: release-guard
 
 # Publishing a release by hand skips the release workflow, so it ships with
 # no binary, no checksums, no attestation and no formula bump. With
-# immutable releases enabled that cannot be repaired in place, so say so
-# loudly at publication rather than letting the release sit broken.
+# immutable releases enabled that cannot be repaired in place, and deleting
+# it does not help: GitHub permanently retires the tag name of a deleted
+# immutable release. Say so loudly at publication rather than letting the
+# release sit broken.
 on:
   release:
     types: [published]
@@ -27,9 +29,11 @@ jobs:
             *,agent,*) ;;
             *)
               echo "::error::$TAG was published without the release assets." \
-                "Publish releases by running the release workflow, which" \
-                "attaches them to the draft first. Delete this release and" \
-                "re-run it." >&2
+                "Releases must come from the release workflow, which attaches" \
+                "assets to a draft before publishing. Do NOT delete and retry" \
+                "this tag: GitHub retires the tag name of a deleted immutable" \
+                "release permanently. Recover by bumping VERSION to the next" \
+                "patch and merging, which cuts a clean release." >&2
               exit 1
               ;;
           esac

@@ -31,6 +31,16 @@ jobs:
             package: '@google/gemini-cli'
             help: 'mcp add --help'
             expect: '--transport'
+          - tool: qwen
+            package: '@qwen-code/qwen-code'
+            help: 'mcp add --help'
+            expect: '--transport'
+          # Amp takes no flags in the calls agent-sync makes, so the
+          # contract is that the add subcommand still exists.
+          - tool: amp
+            package: '@sourcegraph/amp'
+            help: 'mcp --help'
+            expect: 'add'
     steps:
       - name: install ${{ matrix.tool }}
         id: install
