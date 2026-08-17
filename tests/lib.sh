@@ -78,7 +78,7 @@ run_agent_with_synthesizer() {
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \
-    AGENT_SYNC_SYNTHESIZER='printf "# Synthesized memory\n"' \
+    AGENT_SYNC_SYNTHESIZER='printf "# Synthesized memory\n"; awk "f{print} /^--- DOCUMENT ---/{f=1}"' \
     "$AGENT_BIN" "$@"
 }
 
@@ -128,7 +128,8 @@ write_claude_mock() {
       '#!/bin/sh' \
       '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
       'printf "claude\\n" >>"$SYNTH_LOG"' \
-      'printf "# Claude synthesized memory\\n"' >"$MOCK_BIN/claude"
+      'printf "# Claude synthesized memory\\n"' \
+      'awk "f{print} /^--- DOCUMENT ---/{f=1}"' >"$MOCK_BIN/claude"
   else
     printf '%s\n' \
       '#!/bin/sh' \
@@ -144,7 +145,8 @@ write_codex_mock() {
     '#!/bin/sh' \
     '[ "$*" = "exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -" ] || exit 2' \
     'printf "codex\\n" >>"$SYNTH_LOG"' \
-    'printf "# Codex synthesized memory\\n"' >"$MOCK_BIN/codex"
+    'printf "# Codex synthesized memory\\n"' \
+    'awk "f{print} /^--- DOCUMENT ---/{f=1}"' >"$MOCK_BIN/codex"
   chmod +x "$MOCK_BIN/codex"
 }
 
