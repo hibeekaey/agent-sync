@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.6] - 2026-08-17
+
+### Fixed
+
+- `skills sync` refused the entire run when any source skill was a
+  symbolic link, which made the command unusable on machines where a
+  plugin had installed skills as links into a shared skills directory. A
+  symlinked source skill is still never copied, but it is now skipped by
+  name and counted in the summary while the rest propagate.
+
+### Added
+
+- `docs/walkthrough.md`: every command with real output, including the
+  refusals and safety behaviours that are easy to miss.
+
 ## [1.5.5] - 2026-08-17
 
 ### Fixed
