@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-08-17
+
+### Fixed
+
+- A semantic synthesis was discarded whenever the model opened with a line of
+  chat before the document. `valid_synth_output` required the very first line
+  to be a heading, so one sentence of preamble threw away an otherwise correct
+  merge of a 60 KB file and sent `auto` on to the next multi-minute fallback.
+  Prose above the first heading is now dropped, bounded to ten lines: anything
+  longer is a refusal rather than a document, and the deterministic merge
+  already in place is the better answer.
+
 ## [1.6.0] - 2026-08-17
 
 ### Added
