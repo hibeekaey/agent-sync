@@ -1,5 +1,7 @@
 # agent-sync
 
+![agent-sync: one memory, every agent](docs/social-preview.png)
+
 **One memory, every agent.** Synchronize your AI coding agents' memory, so
 you can stop in one agent and pick up in another.
 
