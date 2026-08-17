@@ -1,51 +1,77 @@
 name: release
 
-# Run this workflow to release. It attaches assets to a draft and only then
-# publishes, which is what GitHub's immutable releases require: once a
-# release is published its tag and assets are frozen, so anything uploaded
-# afterwards is rejected.
+# Merging the version bump is the release. On every push to main this reads
+# VERSION from bin/agent: if a release for that version already exists there
+# is nothing to do, otherwise it cuts one.
 #
-# Authoring notes still happens on the Releases page. Save a draft with the
-# release tag and this workflow will find it, keep your notes, attach the
-# attested assets and publish it. With no draft it creates one and
-# generates notes.
+# The release is assembled as a draft and published only once its assets are
+# attached, because GitHub's immutable releases freeze a release's tag and
+# assets at publication.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag, for example v1.5.4
-        required: true
-        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      tag: ${{ steps.decide.outputs.tag }}
+      previous: ${{ steps.decide.outputs.previous }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
+          if [ -z "$VERSION" ]; then
+            echo "could not read VERSION from bin/agent" >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
+          PREV=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "previous=$PREV" >>"$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already released; nothing to do"
+            echo "release=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A version that sorts at or below the current release would tag
+          # history backwards, so refuse rather than guess.
+          if [ -n "$PREV" ]; then
+            HIGHEST=$(printf '%s\n%s\n' "${PREV#v}" "$VERSION" | sort -V | tail -1)
+            if [ "$HIGHEST" != "$VERSION" ]; then
+              echo "VERSION $VERSION is not newer than the current release $PREV" >&2
+              exit 1
+            fi
+          fi
+          echo "releasing $TAG (previous: ${PREV:-none})"
+          echo "release=true" >>"$GITHUB_OUTPUT"
+
   # A release can be cut from a commit that bypassed the pull-request
   # checks, so the suite runs again here instead of being assumed.
   verify:
+    needs: check
+    if: needs.check.outputs.release == 'true'
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: the tag must be a version tag
-        run: |
-          case "${{ inputs.tag }}" in
-            v[0-9]*) ;;
-            *)
-              echo "expected a v-prefixed tag, got '${{ inputs.tag }}'" >&2
-              exit 1
-              ;;
-          esac
-      - name: the released binary must declare the released version
-        run: |
-          DECLARED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
-          if [ "v$DECLARED" != "${{ inputs.tag }}" ]; then
-            echo "bin/agent declares v$DECLARED but the release is ${{ inputs.tag }}" >&2
-            exit 1
-          fi
       - name: shellcheck
         if: runner.os == 'Linux'
         run: shellcheck bin/agent
@@ -53,7 +79,7 @@ jobs:
         run: make test
 
   publish:
-    needs: verify
+    needs: [check, verify]
     permissions:
       contents: write
       id-token: write
@@ -61,22 +87,47 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ needs.check.outputs.tag }}
+      PREV: ${{ needs.check.outputs.previous }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: find or create the draft
+        with:
+          fetch-depth: 0
+      - name: compose the release notes
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]; then
-              echo "$TAG is already published; its assets cannot be replaced" >&2
-              exit 1
-            fi
-            echo "using the existing draft and its notes"
+          VERSION=${TAG#v}
+          # The changelog entry is the release note when it exists.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md >section.md
+          if [ -s section.md ] && grep -q '[^[:space:]]' section.md; then
+            cat section.md >notes.md
           else
-            gh release create "$TAG" --draft --target "$GITHUB_SHA" \
-              --title "$TAG" --generate-notes
-            echo "created a draft with generated notes"
+            echo "No changelog entry for $VERSION." >notes.md
           fi
+          # The commit log and diff are always appended, changelog or not.
+          {
+            printf '\n## Changes'
+            if [ -n "$PREV" ]; then printf ' since %s' "$PREV"; fi
+            printf '\n\n'
+            if [ -n "$PREV" ]; then
+              git log --no-merges --pretty='- %s (%h)' "$PREV..HEAD"
+              printf '\n'
+              printf '%s\n\n' "$(git diff --shortstat "$PREV..HEAD")"
+              printf 'Full diff: https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" "$PREV" "$TAG"
+            else
+              git log --no-merges --pretty='- %s (%h)'
+            fi
+          } >>notes.md
+          echo "--- release notes ---"
+          cat notes.md
+      - name: create the draft
+        run: |
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" \
+            --title "$TAG" --notes-file notes.md
       - name: the bundled skill must validate
         run: gh skill publish --dry-run
       - name: build checksummed assets
@@ -93,10 +144,10 @@ jobs:
         run: gh release edit "$TAG" --draft=false
 
   tap:
-    needs: publish
+    needs: [check, publish]
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
       - name: bump the Homebrew formula
         env:
@@ -123,14 +174,14 @@ jobs:
   # Prove the published artifacts install, rather than trusting that they
   # were uploaded.
   smoke:
-    needs: tap
+    needs: [check, tap]
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: the installer fetches, verifies and installs the release

@@ -10,8 +10,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 | Area | Change |
 | --- | --- |
-| Releases | Cut by running the release workflow with a tag, rather than by publishing from the Releases page. It attaches attested assets to a draft and only then publishes, which is the precondition for GitHub's immutable releases. Notes written as a draft are kept. |
-| Release safety | A new `release-guard` workflow fails when a release is published without its assets, which is what happens if the workflow is bypassed. |
+| Releases | Merging the version bump is the release. Every push to main compares `VERSION` in `bin/agent` against the current release and cuts a new one when it changes, so there is no tag to push and no button to click. |
+| Release notes | Taken from the matching `CHANGELOG.md` section, always followed by the commit log, diffstat and compare link since the previous release. A missing changelog entry falls back to the commit log alone. |
+| Release integrity | The release is assembled as a draft and published only once its attested assets are attached, which is the precondition for GitHub's immutable releases. |
+| Release safety | A new `release-guard` workflow fails when a release is published without its assets, which is what happens if a release is created by hand. |
 | Tests | The behavioral suite is split by surface into `tests/*_test.sh` over a shared `tests/lib.sh`, each with its own isolated fixture, so a single suite can run alone. |
 
 ### Added
