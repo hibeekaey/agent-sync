@@ -691,11 +691,19 @@ assert_contains "$CANON" '# Synthesized memory'
   fail 'agent left temporary files behind'
 assert_not_contains "$AGENT_BIN" '.tmp.$$'
 
-# Workflows intentionally use approved, readable major-version action tags.
-assert_contains "$PROJECT_DIR/.github/workflows/ci.yml" 'actions/checkout@v4'
-assert_contains "$PROJECT_DIR/.github/workflows/release.yml" 'actions/checkout@v4'
-if grep -RE 'uses: [^ ]+@[0-9a-f]{40}([[:space:]]|$)' "$PROJECT_DIR/.github/workflows" >/dev/null; then
-  fail 'a workflow uses a full-commit action pin instead of a major-version tag'
-fi
+# Every action is pinned to a full-commit SHA carrying a version comment,
+# so a moved upstream tag cannot change what CI runs and Dependabot can
+# still read and rewrite the pin.
+for workflow in "$PROJECT_DIR"/.github/workflows/*.yml; do
+  while IFS= read -r line; do
+    case "$line" in
+      *"uses:"*"@"*) ;;
+      *) continue ;;
+    esac
+    printf '%s\n' "$line" |
+      grep -qE 'uses: [^ ]+@[0-9a-f]{40} +# v[0-9]+' ||
+      fail "unpinned action in $(basename "$workflow"): $line"
+  done <"$workflow"
+done
 
 echo 'behavior tests passed'

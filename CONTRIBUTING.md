@@ -40,10 +40,19 @@ AGENT_SYNC_HOME=/tmp/scratch-agents \
 Every change lands through a pull request; the required checks are the
 behavioral suite on ubuntu and macos plus skill validation. To release,
 bump `VERSION` in `bin/agent` and add a `CHANGELOG.md` entry in that pull
-request, then publish a release on the GitHub Releases page with the
-matching `vX.Y.Z` tag. Publishing runs the release workflow, which verifies
-the binary declares the released version, attaches it with `SHA256SUMS`,
-and bumps the Homebrew formula. Nothing is published by hand.
+request, then cut the release from the GitHub Releases page in two steps:
+
+1. **Save it as a draft** with the matching `vX.Y.Z` tag. That reruns the
+   suite and ShellCheck (a release can be cut from a commit that bypassed
+   the pull-request checks), verifies the binary declares the released
+   version, validates the bundled skill, and attaches `agent` plus
+   `SHA256SUMS` with a signed build-provenance attestation.
+2. **Publish the draft.** That bumps the Homebrew formula and smoke tests
+   what was actually published: the checksum-verifying installer on ubuntu
+   and macos, `gh attestation verify`, and a Homebrew install from the tap.
+
+Draft-first is required rather than stylistic: assets must exist before
+publication for a release to be immutable. Nothing is published by hand.
 
 The bundled skill rides the same release tags: `gh skill install` resolves
 `--pin vX.Y.Z` against them directly, so the skill needs no release of its
@@ -57,5 +66,7 @@ makes it discoverable.
 - A behavior change needs a regression test.
 - CI runs shellcheck (Linux) and the behavioral suite on ubuntu and macos; both
   must be green.
-- GitHub Actions must use approved major-version tags such as `@v4`, not
-  full-commit SHA pins.
+- GitHub Actions are pinned to full-commit SHAs with the version in a
+  trailing comment (`@11bd719... # v4.2.2`). Dependabot rewrites both on
+  update, so pinning costs no readability and a compromised upstream tag
+  cannot silently change what CI runs.

@@ -1,0 +1,56 @@
+name: compat
+
+# agent mcp drives other vendors' CLIs by their documented flag grammar.
+# That grammar is a contract we do not control, so check weekly that it
+# still exists rather than discovering a break through a user's broken
+# config. Only --help is exercised: no account, no network mutations.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  grammar:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: claude
+            package: '@anthropic-ai/claude-code'
+            help: 'mcp add-json --help'
+            expect: '--scope'
+          - tool: codex
+            package: '@openai/codex'
+            help: 'mcp add --help'
+            expect: '--url'
+          - tool: gemini
+            package: '@google/gemini-cli'
+            help: 'mcp add --help'
+            expect: '--transport'
+    steps:
+      - name: install ${{ matrix.tool }}
+        id: install
+        continue-on-error: true
+        run: npm install -g ${{ matrix.package }}
+      # A failed install is infrastructure noise, not a contract break, so
+      # it reports and stops instead of failing the run.
+      - name: skip when the CLI could not be installed
+        if: steps.install.outcome == 'failure'
+        run: |
+          echo "::warning::could not install ${{ matrix.package }}; skipping"
+          exit 0
+      - name: the flags agent-sync passes must still exist
+        if: steps.install.outcome == 'success'
+        run: |
+          OUT=$(${{ matrix.tool }} ${{ matrix.help }} 2>&1 || true)
+          printf '%s\n' "$OUT"
+          if ! printf '%s' "$OUT" | grep -q -- '${{ matrix.expect }}'; then
+            echo "::error::${{ matrix.tool }} no longer documents" \
+              "'${{ matrix.expect }}' in '${{ matrix.help }}';" \
+              "agent mcp sync may be broken against it" >&2
+            exit 1
+          fi

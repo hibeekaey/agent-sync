@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.3] - 2026-08-17
+
+### Changed
+
+| Area | Change |
+| --- | --- |
+| Release integrity | Releases are cut draft-first: saving a draft verifies and attaches assets, publishing ships them. Assets exist before publication, which is what immutable releases require. |
+| Provenance | Release assets carry a signed build-provenance attestation, verifiable with `gh attestation verify`. |
+| Release testing | The behavioral suite and ShellCheck run again at release time, so a commit merged with an administrator override cannot ship untested. |
+| Distribution testing | Publishing smoke tests the real artifacts: the checksum-verifying installer on ubuntu and macos, attestation verification, and a Homebrew install from the tap. |
+| Supply chain | GitHub Actions are pinned to commit SHAs, with Dependabot keeping the pins and their version comments current. This reverses the previous major-tag policy; Dependabot removes the readability cost that motivated it. |
+| Compatibility | A weekly job checks that the CLI flag grammars `agent mcp` drives (Claude, Codex, Gemini) still exist, rather than discovering a break through a user's broken config. |
+
 ## [1.5.2] - 2026-08-17
 
 ### Fixed
