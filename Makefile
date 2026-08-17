@@ -25,4 +25,7 @@ man:
 test:
 	sh -n bin/agent
 	sh -n install.sh
-	sh tests/agent_test.sh
+	@for t in tests/*_test.sh; do \
+		sh -n "$$t" || exit 1; \
+		sh "$$t" || exit 1; \
+	done
