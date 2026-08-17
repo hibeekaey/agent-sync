@@ -1,0 +1,166 @@
+# Shared harness for the behavioral suites. Sourcing this builds a fresh
+# isolated fixture: AGENT_SYNC_HOME points at a throwaway agent-config root
+# and AGENT_SYNC_SOURCE at a throwaway canon, so no suite can read or mutate
+# the real configuration. Each suite gets its own fixture and its own
+# cleanup trap.
+umask 077
+
+PROJECT_DIR=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+AGENT_BIN="$PROJECT_DIR/bin/agent"
+TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agent-sync-test.XXXXXXXX")
+AGENT_CONFIG_ROOT="$TEST_ROOT/config"
+CANON="$TEST_ROOT/canon.md"
+GATHER_DIR="$TEST_ROOT/gathered"
+TEST_TMPDIR="$TEST_ROOT/tmp"
+MOCK_BIN="$TEST_ROOT/mock-bin"
+SYNTH_LOG="$TEST_ROOT/synthesizer.log"
+STATE_DIR="$AGENT_CONFIG_ROOT/.config/agent-sync"
+PACK_STATE="$STATE_DIR"
+
+CLAUDE_A="$AGENT_CONFIG_ROOT/.claude/projects/project-a/memory/shared.md"
+CLAUDE_B="$AGENT_CONFIG_ROOT/.claude/projects/project-b/memory/shared.md"
+CODEX_MEMORY="$AGENT_CONFIG_ROOT/.codex/memories/project.md"
+GOOSE_MEMORY="$AGENT_CONFIG_ROOT/.config/goose/memory/project.md"
+
+# KEEP_TEST_ROOT=1 preserves the fixture for post-mortem debugging.
+cleanup() {
+  [ -n "${KEEP_TEST_ROOT:-}" ] || rm -rf "$TEST_ROOT"
+}
+
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+fail() {
+  echo "test failure: $*" >&2
+  exit 1
+}
+
+assert_contains() {
+  file="$1"
+  text="$2"
+  grep -qF -- "$text" "$file" || fail "$file does not contain: $text"
+}
+
+assert_not_contains() {
+  file="$1"
+  text="$2"
+  if grep -qF -- "$text" "$file"; then
+    fail "$file unexpectedly contains: $text"
+  fi
+}
+
+run_agent() {
+  TMPDIR="$TEST_TMPDIR" \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=deterministic \
+    "$AGENT_BIN" "$@"
+}
+
+run_agent_with_synthesizer() {
+  TMPDIR="$TEST_TMPDIR" \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER='printf "# Synthesized memory\n"' \
+    "$AGENT_BIN" "$@"
+}
+
+run_agent_auto() {
+  PATH="$MOCK_BIN:/usr/bin:/bin" \
+    TMPDIR="$TEST_TMPDIR" \
+    SYNTH_LOG="$SYNTH_LOG" \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=auto \
+    "$AGENT_BIN" "$@"
+}
+
+run_agent_without_models() {
+  PATH="/usr/bin:/bin" \
+    TMPDIR="$TEST_TMPDIR" \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=auto \
+    "$AGENT_BIN" "$@"
+}
+
+write_claude_mock() {
+  result="$1"
+  if [ "$result" = "success" ]; then
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
+      'printf "claude\\n" >>"$SYNTH_LOG"' \
+      'printf "# Claude synthesized memory\\n"' >"$MOCK_BIN/claude"
+  else
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
+      'printf "claude\\n" >>"$SYNTH_LOG"' \
+      'exit 1' >"$MOCK_BIN/claude"
+  fi
+  chmod +x "$MOCK_BIN/claude"
+}
+
+write_codex_mock() {
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '[ "$*" = "exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -" ] || exit 2' \
+    'printf "codex\\n" >>"$SYNTH_LOG"' \
+    'printf "# Codex synthesized memory\\n"' >"$MOCK_BIN/codex"
+  chmod +x "$MOCK_BIN/codex"
+}
+
+# Every agent directory the targets table knows about, so detection covers
+# the full matrix rather than whichever tools happen to exist locally.
+mkdir -p \
+  "$TEST_TMPDIR" \
+  "$MOCK_BIN" \
+  "$(dirname "$CLAUDE_A")" \
+  "$(dirname "$CLAUDE_B")" \
+  "$(dirname "$CODEX_MEMORY")" \
+  "$(dirname "$GOOSE_MEMORY")" \
+  "$AGENT_CONFIG_ROOT/.gemini" \
+  "$AGENT_CONFIG_ROOT/.qwen" \
+  "$AGENT_CONFIG_ROOT/.continue/rules" \
+  "$AGENT_CONFIG_ROOT/.codeium/windsurf/memories" \
+  "$AGENT_CONFIG_ROOT/.cursor/rules" \
+  "$AGENT_CONFIG_ROOT/.config/opencode" \
+  "$AGENT_CONFIG_ROOT/.config/amp" \
+  "$AGENT_CONFIG_ROOT/.copilot" \
+  "$AGENT_CONFIG_ROOT/.config/zed" \
+  "$AGENT_CONFIG_ROOT/.junie" \
+  "$AGENT_CONFIG_ROOT/.kiro/steering" \
+  "$AGENT_CONFIG_ROOT/.config/crush" \
+  "$AGENT_CONFIG_ROOT/.roo/rules" \
+  "$AGENT_CONFIG_ROOT/Documents/Cline/Rules"
+
+printf '# Canon\n\nCurated memory.\n' >"$CANON"
+printf 'alpha without a final newline' >"$CLAUDE_A"
+printf 'bravo\n' >"$CLAUDE_B"
+printf 'obsolete codex memory\n' >"$CODEX_MEMORY"
+
+# A skill in the canonical location, for suites that exercise propagation.
+seed_skill() {
+  mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/test-skill"
+  printf -- '---\nname: test-skill\n---\nbody\n' \
+    >"$AGENT_CONFIG_ROOT/.claude/skills/test-skill/SKILL.md"
+}
+
+# Mocked vendor CLIs that log their argv, for suites that exercise MCP push.
+write_mcp_cli_mocks() {
+  for tool in claude codex gemini; do
+    printf '%s\n' \
+      '#!/bin/sh' \
+      "printf \"$tool %s\\\\n\" \"\$*\" >>\"\$SYNTH_LOG\"" >"$MOCK_BIN/$tool"
+    chmod +x "$MOCK_BIN/$tool"
+  done
+}
+
+remove_mcp_cli_mocks() {
+  rm -f "$MOCK_BIN/claude" "$MOCK_BIN/codex" "$MOCK_BIN/gemini"
+}

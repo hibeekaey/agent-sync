@@ -10,7 +10,10 @@ Thanks for your interest in agent-sync.
   the point.
 - New sync targets belong in the `targets()` table; new memory sources
   belong in `sources_for()`. Exclude any file agent-sync itself generates,
-  or sync loops will feed the tool its own output.
+  or sync loops will feed the tool its own output. Cite the tool's official
+  documentation for every path, and read
+  [docs/compatibility.md](docs/compatibility.md) before removing or moving
+  an existing target.
 - Code comments are sparse and single-line, stating non-obvious constraints
   only.
 - Intentional deviations from the shared oss-engineering-standards
@@ -21,9 +24,15 @@ Thanks for your interest in agent-sync.
 ## Developing
 
 ```sh
-make test        # syntax check + isolated behavioral regression suite
+make test              # syntax check + every behavioral suite
+sh tests/mcp_test.sh   # or one suite on its own
 shellcheck bin/agent
 ```
+
+The suites live in `tests/*_test.sh`, one per surface (sync, mcp, skills,
+pack, link, hooks, workflow policy). Each sources `tests/lib.sh`, which
+builds its own throwaway fixture, so they are independent and can run in
+any order. A new suite is picked up by `make test` automatically.
 
 `make test` uses `AGENT_SYNC_HOME` and `AGENT_SYNC_SOURCE` to build an isolated
 fixture. It never reads or mutates your real agent configuration. For manual

@@ -269,6 +269,7 @@ Beyond memory, `agent` syncs the rest of your agent setup:
 | Synthesized source | `AGENT_SYNC_SOURCE` overrides its location. When it lives elsewhere, sync redistributes it to Claude too. |
 | Test isolation | `AGENT_SYNC_HOME` points the tool at a fixture root; `make test` never touches your real config. |
 | Manual | `man agent` after `make install`, or `agent help`. |
+| Compatibility | Supported platforms, what agent-sync depends on in each tool, versioning and the deprecation policy: [docs/compatibility.md](docs/compatibility.md). |
 
 ## Contributing
 
