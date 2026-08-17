@@ -209,26 +209,61 @@ assert_contains "$CANON" '# Synthesized memory'
   fail 'agent left temporary files behind'
 assert_not_contains "$AGENT_BIN" '.tmp.$$'
 
+# Synthesizer fixtures live in files rather than inline strings: each one has
+# to read the prompt on stdin and answer proportionally to it, which is the
+# behaviour the size floor is written against.
+run_synth_fixture() {
+  PATH="$SAFE_PATH" TMPDIR="$TEST_TMPDIR" AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER="sh $TEST_ROOT/$1" "$AGENT_BIN" sync
+}
+
 # A synthesizer that prefaces the document with a line of chat still counts:
 # the preamble is dropped, the document is kept. Rejecting it would discard a
 # correct merge over one sentence.
-PREAMBLE_SYNTH='printf "Here is the merged document:\n\n# Preambled memory\nbody\n"'
-PATH="$SAFE_PATH" TMPDIR="$TEST_TMPDIR" AGENT_SYNC_ACTIVE=0 \
-  AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" AGENT_SYNC_SOURCE="$CANON" \
-  AGENT_SYNC_SYNTHESIZER="$PREAMBLE_SYNTH" "$AGENT_BIN" sync >/dev/null
+cat >"$TEST_ROOT/synth-preamble.sh" <<'FIXTURE'
+printf 'Here is the merged document:\n\n# Preambled memory\n'
+awk 'f { print } /^--- DOCUMENT ---$/ { f = 1 }'
+FIXTURE
+run_synth_fixture synth-preamble.sh >/dev/null
 [ "$(head -1 "$CANON")" = '# Preambled memory' ] ||
   fail "preamble was not stripped; canon starts: $(head -1 "$CANON")"
 assert_not_contains "$CANON" 'Here is the merged document'
 
 # Prose running past the window is a refusal, not a document. The canon keeps
 # the deterministic merge rather than being replaced by the model's chat.
-cp "$CANON" "$TEST_ROOT/before-refusal.md"
-# shellcheck disable=SC2016  # the synthesizer body must reach sh -c unexpanded
-LONG_REFUSAL='i=0; while [ $i -lt 14 ]; do echo "I cannot do that."; i=$((i+1)); done; echo "# Too late"'
-PATH="$SAFE_PATH" TMPDIR="$TEST_TMPDIR" AGENT_SYNC_ACTIVE=0 \
-  AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" AGENT_SYNC_SOURCE="$CANON" \
-  AGENT_SYNC_SYNTHESIZER="$LONG_REFUSAL" "$AGENT_BIN" sync >/dev/null 2>&1
+cat >"$TEST_ROOT/synth-long-refusal.sh" <<'FIXTURE'
+i=0
+while [ "$i" -lt 14 ]; do
+  echo 'I cannot do that.'
+  i=$((i + 1))
+done
+echo '# Too late'
+FIXTURE
+run_synth_fixture synth-long-refusal.sh >/dev/null 2>&1
 assert_not_contains "$CANON" '# Too late'
 assert_not_contains "$CANON" 'I cannot do that.'
+
+# The size floor. A refusal that happens to open with a heading passes every
+# other check, so without this it replaces the memory file and is pushed to
+# every agent. Shrinking is legitimate -- folding the imported sections away
+# is the whole job -- so the floor sits well below a real merge.
+cat >"$TEST_ROOT/synth-stub.sh" <<'FIXTURE'
+cat >/dev/null
+printf '# Note\n\nI cannot rewrite this document.\n'
+FIXTURE
+cp "$CANON" "$TEST_ROOT/before-stub.md"
+run_synth_fixture synth-stub.sh >/dev/null 2>&1
+cmp -s "$CANON" "$TEST_ROOT/before-stub.md" ||
+  fail 'a heading-prefixed stub replaced the canon'
+
+# Half the document is a plausible merge and must survive the floor, which is
+# the failure mode of setting it too high.
+cat >"$TEST_ROOT/synth-half.sh" <<'FIXTURE'
+printf '# Halved memory\n'
+awk 'f { n++; if (n % 2 == 0) print } /^--- DOCUMENT ---$/ { f = 1 }'
+FIXTURE
+run_synth_fixture synth-half.sh >/dev/null
+assert_contains "$CANON" '# Halved memory'
 
 echo 'sync tests passed'

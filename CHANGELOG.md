@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.2] - 2026-08-17
+
+### Fixed
+
+- A synthesizer's refusal was accepted as the new memory file whenever it
+  happened to open with a heading. Nothing else about the output was checked,
+  so three lines of "I cannot rewrite this document" replaced the whole file
+  and were redistributed to every agent, recoverable only from the `.bak`.
+  A synthesis must now be at least a quarter of the document it was given.
+  Shrinking is the job -- folding the imported sections away is most of it,
+  and a measured real merge came in at 45% -- so the floor sits an order of
+  magnitude above a refusal and well under a genuine merge.
+
 ## [1.6.1] - 2026-08-17
 
 ### Fixed

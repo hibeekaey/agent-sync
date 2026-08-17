@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.6.1"
+VERSION="1.6.2"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -508,8 +508,27 @@ require_selected_synthesizer() {
   esac
 }
 
+# Shrinking is the point of a synthesis: it folds the imported sections away,
+# and a real one measured 45% of its input. A refusal measured 2%. The floor
+# sits between them, an order of magnitude clear of a refusal and well under
+# a genuine merge, because accepting a refusal replaces the memory file and
+# pushes the stub to every agent before anyone notices. Recovery is the .bak,
+# which is a worse answer than not accepting it.
+SYNTH_MIN_PERCENT=25
+
 valid_synth_output() {
-  [ -s "$1" ] && head -1 "$1" | grep -q '^#'
+  vs_out="$1"
+  vs_src="$2"
+  [ -s "$vs_out" ] || return 1
+  head -1 "$vs_out" | grep -q '^#' || return 1
+  [ -n "$vs_src" ] && [ -f "$vs_src" ] || return 0
+  vs_src_lines=$(wc -l <"$vs_src" | tr -d ' ')
+  [ "$vs_src_lines" -gt 0 ] || return 0
+  vs_out_lines=$(wc -l <"$vs_out" | tr -d ' ')
+  if [ $((vs_out_lines * 100)) -lt $((vs_src_lines * SYNTH_MIN_PERCENT)) ]; then
+    echo "${C_ERR}agent:${C_OFF} synthesis returned $vs_out_lines lines from $vs_src_lines; refusing to replace $vs_src with it" >&2
+    return 1
+  fi
 }
 
 # A synthesizer sometimes opens with a line of chat before the document.
@@ -557,7 +576,7 @@ try_synthesizer() {
   esac
   [ "$run_status" -eq 0 ] || return 1
   strip_synth_preamble "$out"
-  valid_synth_output "$out"
+  valid_synth_output "$out" "$SRC"
 }
 
 accept_synth_output() {
