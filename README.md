@@ -89,6 +89,11 @@ With Homebrew:
 
 ```sh
 brew install hibeekaey/tap/agent-sync
+
+# Upgrading: brew only refreshes taps once per HOMEBREW_AUTO_UPDATE_SECS
+# (24 hours by default), so a fresh release can look like "not outdated"
+# until the tap is fetched.
+brew update && brew upgrade agent-sync
 ```
 
 From a clone (installs the man page and completions too):
