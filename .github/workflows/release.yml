@@ -1,27 +1,58 @@
 name: release
 
-# Publishing a release from the GitHub Releases page is the trigger. Keying
-# on tag pushes instead would silently skip any release published against a
-# tag that already exists.
+# Draft-first. Saving a draft release verifies, attests and attaches the
+# assets; publishing that draft bumps the formula and smoke tests what was
+# actually published. Assets must exist before publication so a release can
+# be immutable, and keying on tag pushes instead would silently skip a
+# release published against a tag that already exists.
 on:
   release:
-    types: [published]
+    types: [created, published]
 
 permissions:
   contents: read
 
 jobs:
+  # A release can be cut from a commit that bypassed the pull-request
+  # checks, so the suite runs again here instead of being assumed.
+  verify:
+    if: github.event.action == 'created'
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.release.target_commitish }}
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck bin/agent
+      - name: behavioral suite
+        run: make test
+
   assets:
+    if: github.event.action == 'created'
+    needs: verify
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@v4
+      # A draft release has no tag yet, so build from what it targets.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.target_commitish }}
+      - name: draft-first reminder
+        if: github.event.release.draft == false
+        run: |
+          echo "::warning::Published without a draft. Once immutable releases" \
+            "are enabled, attaching assets to an already published release" \
+            "fails; save the release as a draft first."
       - name: the released binary must declare the released version
         run: |
           DECLARED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
@@ -38,11 +69,15 @@ jobs:
         run: |
           cp bin/agent agent
           sha256sum agent > SHA256SUMS
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: agent
       - name: attach to the release
         run: gh release upload "$TAG" agent SHA256SUMS --clobber
 
   tap:
-    needs: assets
+    if: github.event.action == 'published'
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name }}
@@ -68,3 +103,38 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "chore: agent-sync ${TAG#v}"
           git push
+
+  # Prove the published artifacts install, rather than trusting that they
+  # were uploaded.
+  smoke:
+    if: github.event.action == 'published'
+    needs: tap
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: the installer fetches, verifies and installs the release
+        run: |
+          AGENT_SYNC_VERSION="$TAG" PREFIX="$HOME/.smoke" sh install.sh
+          GOT=$("$HOME/.smoke/bin/agent" version)
+          [ "$GOT" = "agent $TAG" ] || {
+            echo "installer produced '$GOT', expected 'agent $TAG'" >&2
+            exit 1
+          }
+      - name: the attestation verifies against this repository
+        run: gh attestation verify "$HOME/.smoke/bin/agent" --repo "$GITHUB_REPOSITORY"
+      - name: homebrew installs the released formula
+        if: runner.os == 'macOS'
+        run: |
+          brew tap hibeekaey/tap
+          brew install hibeekaey/tap/agent-sync
+          GOT=$(agent version)
+          [ "$GOT" = "agent $TAG" ] || {
+            echo "brew produced '$GOT', expected 'agent $TAG'" >&2
+            exit 1
+          }
