@@ -27,6 +27,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck bin/agent
+        run: shellcheck bin/agent scripts/*.sh tests/*.sh
       - name: smoke
         run: make test

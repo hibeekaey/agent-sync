@@ -1,6 +1,7 @@
 #!/bin/sh
 # The MCP registry: pushing to CLI-managed tools, writing owned config files,
 # ownership and rollback safety, and input validation.
+# shellcheck disable=SC2016  # mock bodies must not expand when written
 set -eu
 . "$(CDPATH= cd "$(dirname "$0")" && pwd)/lib.sh"
 

@@ -60,6 +60,7 @@ jobs:
               mcp --help :: add
               mcp --help :: remove
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: install ${{ matrix.tool }}
         run: |
           # Retry for transient registry failures. Exhausting the retries
@@ -75,27 +76,15 @@ jobs:
             "3 attempts. If it was renamed or withdrawn, agent-sync's" \
             "support for ${{ matrix.tool }} needs updating." >&2
           exit 1
+      # Matching lives in a script so it can be unit tested; see
+      # tests/compat_test.sh, which pins the substring false positives.
       - name: every flag agent-sync passes must still exist
         env:
           TOOL: ${{ matrix.tool }}
           ASSERTIONS: ${{ matrix.assertions }}
         run: |
-          printf '%s\n' "$ASSERTIONS" >/tmp/assertions
-          failures=0
-          # Redirect rather than pipe: a piped while runs in a subshell and
-          # would discard the counter.
-          while IFS= read -r line; do
-            [ -n "$line" ] || continue
-            args=$(printf '%s' "${line%%::*}" | sed 's/[[:space:]]*$//')
-            token=$(printf '%s' "${line#*::}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            # shellcheck disable=SC2086
-            out=$("$TOOL" $args 2>&1 || true)
-            if printf '%s' "$out" | grep -qF -- "$token"; then
-              echo "ok: $TOOL $args documents '$token'"
-            else
-              echo "::error::$TOOL $args no longer documents '$token';" \
-                "agent mcp sync may be broken against it" >&2
-              failures=$((failures + 1))
-            fi
-          done </tmp/assertions
-          [ "$failures" -eq 0 ] || exit 1
+          if ! printf '%s\n' "$ASSERTIONS" | scripts/check-cli-grammar.sh "$TOOL"; then
+            echo "::error::$TOOL no longer documents grammar that agent mcp" \
+              "sync depends on; see the failures above" >&2
+            exit 1
+          fi

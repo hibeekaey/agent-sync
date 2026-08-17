@@ -1,0 +1,5 @@
+# SC1091: tests source tests/lib.sh through a computed path, which
+# ShellCheck cannot follow statically.
+# SC1007: `CDPATH= cd ...` deliberately clears CDPATH for one command so
+# `cd` cannot land somewhere unexpected. The empty assignment is the point.
+disable=SC1091,SC1007
