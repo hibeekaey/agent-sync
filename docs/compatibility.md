@@ -27,13 +27,32 @@ A tool that moves its path breaks quietly: agent-sync writes a file nobody
 reads. Guard: `agent doctor` reports what it detected, and `agent targets`
 lists every path so a change is visible.
 
-**CLI flag grammar.** `agent mcp sync` executes other vendors' CLIs
-(`claude mcp add-json --scope`, `codex mcp add --url`, `gemini mcp add
---transport`, and the Qwen and Amp equivalents). A tool that changes its
-flags breaks loudly, mid-run. Guard: the weekly `compat` workflow installs
-those CLIs and asserts the flags still exist in their help output, so a
-break surfaces as a failed scheduled run rather than a user's broken
-configuration.
+**CLI flag grammar.** `agent mcp sync` executes other vendors' CLIs. A tool
+that changes its flags breaks loudly, mid-run. Guard: the weekly `compat`
+workflow installs each CLI and asserts the grammar agent-sync depends on
+still exists in its help output, so a break surfaces as a failed scheduled
+run rather than a user's broken configuration.
+
+Every flag in this table is asserted by the weekly job, not a
+representative sample of them:
+
+| CLI | Flags and subcommands agent-sync passes |
+| --- | --- |
+| Claude Code | `mcp add-json --scope`, `mcp remove --scope` |
+| Codex | `mcp add --url`, `mcp add --env`, `mcp remove` |
+| Gemini CLI | `mcp add -s -e --transport --header`, `mcp remove -s` |
+| Qwen Code | Same grammar as Gemini CLI, asserted separately |
+| Amp | `mcp add` and `mcp remove` subcommands, positional arguments only |
+
+A CLI that cannot be installed fails the job after three attempts rather
+than being skipped: a renamed or withdrawn package is itself a
+compatibility break.
+
+Cursor, Windsurf and Kiro have no MCP add command, so agent-sync writes
+their config files directly; those are path dependencies, not grammar ones.
+Zed, OpenCode, Goose and Continue keep MCP inside shared settings that
+agent-sync never edits, so it prints a snippet instead and has no grammar
+dependency on them at all.
 
 Neither contract is ours to control. Where a vendor removes a capability we
 depend on, the affected target is deprecated per the policy below.

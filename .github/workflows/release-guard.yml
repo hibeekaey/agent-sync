@@ -2,8 +2,10 @@ name: release-guard
 
 # Publishing a release by hand skips the release workflow, so it ships with
 # no binary, no checksums, no attestation and no formula bump. With
-# immutable releases enabled that cannot be repaired in place, so say so
-# loudly at publication rather than letting the release sit broken.
+# immutable releases enabled that cannot be repaired in place, and deleting
+# it does not help: GitHub permanently retires the tag name of a deleted
+# immutable release. Say so loudly at publication rather than letting the
+# release sit broken.
 on:
   release:
     types: [published]
@@ -12,24 +14,52 @@ permissions:
   contents: read
 
 jobs:
-  assets-present:
+  complete:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name }}
     steps:
-      - name: a published release must carry its assets
+      - name: a published release must carry every asset
         run: |
           NAMES=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '[.assets[].name] | join(",")')
           echo "assets: ${NAMES:-none}"
-          case ",$NAMES," in
-            *,agent,*) ;;
-            *)
-              echo "::error::$TAG was published without the release assets." \
-                "Publish releases by running the release workflow, which" \
-                "attaches them to the draft first. Delete this release and" \
-                "re-run it." >&2
-              exit 1
-              ;;
-          esac
+          missing=""
+          for want in agent SHA256SUMS; do
+            case ",$NAMES," in
+              *",$want,"*) ;;
+              *) missing="$missing $want" ;;
+            esac
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::$TAG is missing release asset(s):$missing." \
+              "Releases must come from the release workflow, which attaches" \
+              "assets to a draft before publishing. Do NOT delete and retry" \
+              "this tag: GitHub retires the tag name of a deleted immutable" \
+              "release permanently. Recover by bumping VERSION to the next" \
+              "patch and merging, which cuts a clean release." >&2
+            exit 1
+          fi
+      # The binary being present proves nothing about where it came from.
+      - name: the published binary must carry verifiable provenance
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            -p agent -O agent-published
+          if ! gh attestation verify agent-published --repo "$GITHUB_REPOSITORY"; then
+            echo "::error::$TAG has no valid build-provenance attestation." \
+              "Recover by bumping VERSION to the next patch and merging;" \
+              "never delete and reuse an immutable release's tag." >&2
+            exit 1
+          fi
+      - name: the checksum must match the published binary
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            -p SHA256SUMS -O SHA256SUMS
+          RECORDED=$(awk '{print $1}' SHA256SUMS)
+          ACTUAL=$(sha256sum agent-published | awk '{print $1}')
+          if [ "$RECORDED" != "$ACTUAL" ]; then
+            echo "::error::$TAG's SHA256SUMS does not match its binary" >&2
+            exit 1
+          fi
+          echo "checksum matches: $ACTUAL"
