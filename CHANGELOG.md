@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.4] - 2026-08-17
+
+### Changed
+
+| Area | Change |
+| --- | --- |
+| Releases | Cut by running the release workflow with a tag, rather than by publishing from the Releases page. It attaches attested assets to a draft and only then publishes, which is the precondition for GitHub's immutable releases. Notes written as a draft are kept. |
+| Release safety | A new `release-guard` workflow fails when a release is published without its assets, which is what happens if the workflow is bypassed. |
+| Tests | The behavioral suite is split by surface into `tests/*_test.sh` over a shared `tests/lib.sh`, each with its own isolated fixture, so a single suite can run alone. |
+
+### Added
+
+- `docs/compatibility.md`: supported platforms, what agent-sync depends on
+  in each tool and how each dependency fails, agent version support,
+  semantic-versioning scope, stable on-disk state formats, and the
+  deprecation policy for removing a target.
+
 ## [1.5.3] - 2026-08-17
 
 ### Changed

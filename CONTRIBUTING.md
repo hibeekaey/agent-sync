@@ -47,27 +47,29 @@ AGENT_SYNC_HOME=/tmp/scratch-agents \
 ## Releases
 
 Every change lands through a pull request; the required checks are the
-behavioral suite on ubuntu and macos plus skill validation. To release,
-bump `VERSION` in `bin/agent` and add a `CHANGELOG.md` entry in that pull
-request, then publish a release on the GitHub Releases page with the
-matching `vX.Y.Z` tag. Saving it as a draft first is fine; the automation
-runs on publication either way.
+behavioral suite on ubuntu and macos plus skill validation. To release:
 
-Publishing reruns the suite and ShellCheck (a release can be cut from a
-commit that bypassed the pull-request checks), verifies the binary declares
-the released version, validates the bundled skill, attaches `agent` and
-`SHA256SUMS` with a signed build-provenance attestation, bumps the Homebrew
-formula, then smoke tests the published artifacts: the checksum-verifying
-installer on ubuntu and macos, `gh attestation verify`, and a Homebrew
-install from the tap. Nothing is published by hand.
+1. In the release pull request, bump `VERSION` in `bin/agent` and add a
+   `CHANGELOG.md` entry.
+2. Optionally write the release notes as a **draft** on the Releases page,
+   tagged `vX.Y.Z`. Skip this and notes are generated for you.
+3. Run the **release** workflow from the Actions tab with that tag.
 
-GitHub's immutable releases are **not** enabled, and cannot be while
-releases are published by hand. Immutability requires every asset to exist
-before publication, but GitHub does not run workflows when a draft is
-saved (only `published` fires for drafts), so assets can only be attached
-after the release goes public. Enabling immutability would mean giving up
-the Releases-page ritual in favour of a `workflow_dispatch` release that
-creates the draft, uploads, and publishes in one automated run.
+The workflow reruns the suite and ShellCheck (a release can be cut from a
+commit that bypassed the pull-request checks), refuses a tag that disagrees
+with the binary's `VERSION`, validates the bundled skill, attaches `agent`
+and `SHA256SUMS` with a signed build-provenance attestation **to the
+draft**, publishes it, bumps the Homebrew formula, then smoke tests what
+shipped: the checksum-verifying installer on ubuntu and macos,
+`gh attestation verify`, and a Homebrew install from the tap.
+
+Do not publish a release by hand. Assets must be attached before
+publication, because GitHub's immutable releases freeze a release's tag and
+assets the moment it goes public, and no workflow can fire on a draft being
+saved (only `published` fires for drafts). A hand-published release
+therefore ships with no binary, no checksums and no attestation, and cannot
+be repaired in place. The `release-guard` workflow fails loudly when that
+happens; delete the release and run the workflow instead.
 
 The bundled skill rides the same release tags: `gh skill install` resolves
 `--pin vX.Y.Z` against them directly, so the skill needs no release of its

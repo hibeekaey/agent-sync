@@ -1,13 +1,21 @@
 name: release
 
-# Publishing a release from the GitHub Releases page is the trigger, whether
-# it was saved as a draft first or published directly. Keying on tag pushes
-# would silently skip a release published against an existing tag, and
-# GitHub does not run workflows for the `created` activity type on drafts,
-# so a draft save cannot be the trigger either.
+# Run this workflow to release. It attaches assets to a draft and only then
+# publishes, which is what GitHub's immutable releases require: once a
+# release is published its tag and assets are frozen, so anything uploaded
+# afterwards is rejected.
+#
+# Authoring notes still happens on the Releases page. Save a draft with the
+# release tag and this workflow will find it, keep your notes, attach the
+# attested assets and publish it. With no draft it creates one and
+# generates notes.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v1.5.4
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,15 +30,29 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.release.tag_name }}
+      - name: the tag must be a version tag
+        run: |
+          case "${{ inputs.tag }}" in
+            v[0-9]*) ;;
+            *)
+              echo "expected a v-prefixed tag, got '${{ inputs.tag }}'" >&2
+              exit 1
+              ;;
+          esac
+      - name: the released binary must declare the released version
+        run: |
+          DECLARED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
+          if [ "v$DECLARED" != "${{ inputs.tag }}" ]; then
+            echo "bin/agent declares v$DECLARED but the release is ${{ inputs.tag }}" >&2
+            exit 1
+          fi
       - name: shellcheck
         if: runner.os == 'Linux'
         run: shellcheck bin/agent
       - name: behavioral suite
         run: make test
 
-  assets:
+  publish:
     needs: verify
     permissions:
       contents: write
@@ -39,21 +61,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.release.tag_name }}
-      - name: the released binary must declare the released version
+      - name: find or create the draft
         run: |
-          DECLARED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
-          if [ "v$DECLARED" != "$TAG" ]; then
-            echo "bin/agent declares v$DECLARED but the release is $TAG" >&2
-            exit 1
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "$TAG is already published; its assets cannot be replaced" >&2
+              exit 1
+            fi
+            echo "using the existing draft and its notes"
+          else
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" \
+              --title "$TAG" --generate-notes
+            echo "created a draft with generated notes"
           fi
-      # The bundled skill ships on this tag, so it must still be valid here.
-      # Publishing it is deliberately NOT done: gh skill publish insists on
-      # creating a new tag, which would fork a second version line.
       - name: the bundled skill must validate
         run: gh skill publish --dry-run
       - name: build checksummed assets
@@ -64,14 +87,16 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: agent
-      - name: attach to the release
+      - name: attach the assets to the draft
         run: gh release upload "$TAG" agent SHA256SUMS --clobber
+      - name: publish
+        run: gh release edit "$TAG" --draft=false
 
   tap:
-    needs: assets
+    needs: publish
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       - name: bump the Homebrew formula
         env:
@@ -105,7 +130,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: the installer fetches, verifies and installs the release
