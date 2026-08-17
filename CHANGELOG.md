@@ -15,6 +15,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Compatibility grammar matching is boundary-aware and unit tested. Substring matching let `--scope` satisfy a check for `-s` and `additional` satisfy `add`, so the short-flag assertions could not fail; the matcher now lives in `scripts/check-cli-grammar.sh` with fixtures in `tests/compat_test.sh` pinning exactly those false positives. ShellCheck now covers `scripts/` and `tests/` as well as `bin/agent`.
 - The weekly compatibility job covers every CLI grammar `agent mcp` depends
   on. Qwen Code and Amp were named in the contract but never checked, and
   the checked CLIs asserted one representative flag rather than all of

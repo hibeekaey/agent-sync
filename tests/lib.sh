@@ -1,3 +1,6 @@
+# shellcheck shell=sh
+# shellcheck disable=SC2034,SC2016  # vars are consumed by the suites; the
+# single quotes are deliberate: mock bodies must not expand when written
 # Shared harness for the behavioral suites. Sourcing this builds a fresh
 # isolated fixture: AGENT_SYNC_HOME points at a throwaway agent-config root
 # and AGENT_SYNC_SOURCE at a throwaway canon, so no suite can read or mutate

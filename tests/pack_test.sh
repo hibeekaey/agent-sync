@@ -1,6 +1,7 @@
 #!/bin/sh
 # Memory packs: folding into the canon, removal, and the untrusted-archive
 # paths (failed refetch, subdirectory escape, marker injection).
+# shellcheck disable=SC2016  # mock bodies must not expand when written
 set -eu
 . "$(CDPATH= cd "$(dirname "$0")" && pwd)/lib.sh"
 

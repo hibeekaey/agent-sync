@@ -1,5 +1,6 @@
 #!/bin/sh
 # Repository policy that is cheaper to enforce than to remember.
+# shellcheck disable=SC2094  # the workflow file is only read, never written
 set -eu
 . "$(CDPATH= cd "$(dirname "$0")" && pwd)/lib.sh"
 
