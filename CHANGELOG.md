@@ -10,7 +10,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 | Area | Change |
 | --- | --- |
-| Release integrity | Releases are cut draft-first: saving a draft verifies and attaches assets, publishing ships them. Assets exist before publication, which is what immutable releases require. |
+| Release integrity | Publishing a release verifies it, attaches attested assets, bumps the formula, then smoke tests what shipped. Immutable releases stay off: GitHub does not run workflows when a draft is saved, so a hand-published release cannot have its assets in place beforehand. |
 | Provenance | Release assets carry a signed build-provenance attestation, verifiable with `gh attestation verify`. |
 | Release testing | The behavioral suite and ShellCheck run again at release time, so a commit merged with an administrator override cannot ship untested. |
 | Distribution testing | Publishing smoke tests the real artifacts: the checksum-verifying installer on ubuntu and macos, attestation verification, and a Homebrew install from the tap. |
