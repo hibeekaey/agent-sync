@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-08-17
+
+### Added
+
+- Colour in status output: `synced` green, `STALE` bold yellow, paths cyan,
+  synthesis magenta, counts bright green, failures red, and unified diffs
+  painted like a diff. This is the terminal the showcase video depicts.
+- `--color[=auto|always|never]` and `--no-color`, honoured on every command,
+  plus `NO_COLOR`, `FORCE_COLOR` and `CLICOLOR_FORCE`. The flags are global
+  and stop at a literal `--`, so a server's own `--no-color` still reaches it
+  through `mcp add`.
+
+Colour is additive: it appears only when standard output is a terminal, so
+piped and redirected output, exit codes, generated markdown and JSON, hook
+recipes and MCP snippets are byte-for-byte unchanged.
+
+### Fixed
+
+- The test harness could escape its fixture. `AGENT_SYNC_HOME` isolates the
+  files agent-sync writes itself, but `mcp sync` delegates to whichever
+  vendor CLI is on `PATH`, so a suite that forgot to prefix a mock `PATH`
+  registered its probe server in the developer's real configuration. Every
+  runner in `tests/lib.sh` now pins `PATH` to the fixture's mock directory,
+  and a policy test fails the build if one stops doing so.
+
 ## [1.5.6] - 2026-08-17
 
 ### Fixed

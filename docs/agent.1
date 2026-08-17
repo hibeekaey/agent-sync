@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "agent" "1" "2026\-08\-16"
+.TH "agent" "1" "2026\-08\-17"
 .PP
 .SH NAME
 .PP
@@ -40,6 +40,8 @@ agent \- synchronize agent memory across AI coding agents
 \fBagent\fR skills sync
 .br
 \fBagent\fR hooks [TOOL]
+.PP
+Every command also accepts \fB\-\-color\fR[=\fIWHEN\fR] and \fB\-\-no\-color\fR.\&
 .PP
 .SH DESCRIPTION
 .PP
@@ -154,8 +156,33 @@ SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
 cron fallback.\& Printed, never installed.\&
 .PP
 .RE
+.SH OPTIONS
+.PP
+\fB\-\-color\fR[=\fIWHEN\fR], \fB\-\-no\-color\fR
+.RS 4
+Colour status output.\& \fIWHEN\fR is \fBauto\fR (the default: colour only when
+standard output is a terminal), \fBalways\fR or \fBnever\fR; a bare \fB\-\-color\fR
+means \fBalways\fR.\& The flag is global and may appear anywhere before a
+literal \fB\-\-\fR, past which the remaining words belong to the program
+being registered by \fBmcp add\fR.\& Colour is additive: escapes are never
+written to a file, and text, exit codes and piped bytes are identical
+either way.\&
+.PP
+.RE
 .SH ENVIRONMENT
 .PP
+\fBNO_COLOR\fR
+.RS 4
+Set to any non\-empty value to disable colour (see https://no\-color.\&org).\&
+.PP
+.RE
+\fBFORCE_COLOR\fR, \fBCLICOLOR_FORCE\fR
+.RS 4
+Set to any non\-empty value other than 0 to keep colour on when
+standard output is not a terminal.\& Both override \fBNO_COLOR\fR; an
+explicit \fB\-\-color\fR or \fB\-\-no\-color\fR overrides all three.\&
+.PP
+.RE
 \fBAGENT_SYNC_SOURCE\fR
 .RS 4
 Location of the synthesized memory file

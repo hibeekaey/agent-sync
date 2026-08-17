@@ -20,6 +20,14 @@ SYNTH_LOG="$TEST_ROOT/synthesizer.log"
 STATE_DIR="$AGENT_CONFIG_ROOT/.config/agent-sync"
 PACK_STATE="$STATE_DIR"
 
+# Every runner below is pinned to this PATH. AGENT_SYNC_HOME isolates the
+# files agent-sync writes itself, but `mcp sync` delegates to whichever
+# vendor CLI it finds, and a real `claude` or `codex` on the ambient PATH
+# writes to the developer's actual configuration, not the fixture. MOCK_BIN
+# is empty until a suite calls write_mcp_cli_mocks, so the default state is
+# "no vendor CLI exists" -- the only state in which a suite cannot escape.
+SAFE_PATH="$MOCK_BIN:/usr/bin:/bin"
+
 CLAUDE_A="$AGENT_CONFIG_ROOT/.claude/projects/project-a/memory/shared.md"
 CLAUDE_B="$AGENT_CONFIG_ROOT/.claude/projects/project-b/memory/shared.md"
 CODEX_MEMORY="$AGENT_CONFIG_ROOT/.codex/memories/project.md"
@@ -53,7 +61,9 @@ assert_not_contains() {
 }
 
 run_agent() {
-  TMPDIR="$TEST_TMPDIR" \
+  PATH="$SAFE_PATH" \
+    TMPDIR="$TEST_TMPDIR" \
+    NO_COLOR= FORCE_COLOR= CLICOLOR_FORCE= \
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \
@@ -62,7 +72,9 @@ run_agent() {
 }
 
 run_agent_with_synthesizer() {
-  TMPDIR="$TEST_TMPDIR" \
+  PATH="$SAFE_PATH" \
+    TMPDIR="$TEST_TMPDIR" \
+    NO_COLOR= FORCE_COLOR= CLICOLOR_FORCE= \
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \
@@ -71,9 +83,10 @@ run_agent_with_synthesizer() {
 }
 
 run_agent_auto() {
-  PATH="$MOCK_BIN:/usr/bin:/bin" \
+  PATH="$SAFE_PATH" \
     TMPDIR="$TEST_TMPDIR" \
     SYNTH_LOG="$SYNTH_LOG" \
+    NO_COLOR= FORCE_COLOR= CLICOLOR_FORCE= \
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \
@@ -81,9 +94,26 @@ run_agent_auto() {
     "$AGENT_BIN" "$@"
 }
 
+# The suites never own a terminal, so colour has to be forced to be observed
+# at all. Everything else about the run is identical to run_agent.
+run_agent_forced_color() {
+  PATH="$SAFE_PATH" \
+    TMPDIR="$TEST_TMPDIR" \
+    NO_COLOR= CLICOLOR_FORCE= FORCE_COLOR=1 \
+    TERM=xterm-256color \
+    AGENT_SYNC_ACTIVE=0 \
+    AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
+    AGENT_SYNC_SOURCE="$CANON" \
+    AGENT_SYNC_SYNTHESIZER=deterministic \
+    "$AGENT_BIN" "$@"
+}
+
+# Deliberately narrower than SAFE_PATH: MOCK_BIN is excluded so that even a
+# suite that has written mocks sees no synthesizer at all.
 run_agent_without_models() {
   PATH="/usr/bin:/bin" \
     TMPDIR="$TEST_TMPDIR" \
+    NO_COLOR= FORCE_COLOR= CLICOLOR_FORCE= \
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \

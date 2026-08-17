@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.5.6"
+VERSION="1.6.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -45,6 +45,59 @@ IMPORTED_COUNT=0
 SYNTHESIZER_REQUEST=""
 SYNTHESIZER_FROM_CLI=0
 
+# Colour is strictly additive: the escapes stay empty unless stdout is a
+# terminal, so pipes, redirection, cron and CI keep byte-identical output.
+# Names are roles rather than hues so the palette is retuned in one place,
+# and only status lines wear them -- generated file content, MCP snippets and
+# hook recipes are printed plain because they are meant to be pasted or read
+# back by another program.
+COLOR_MODE=auto
+C_OFF=""
+C_BOLD=""
+C_DIM=""
+C_OK=""
+C_WARN=""
+C_ERR=""
+C_PATH=""
+C_NUM=""
+C_PLAN=""
+
+color_on() { [ -n "$C_OFF" ]; }
+
+# Precedence: an explicit --color/--no-color flag, then FORCE_COLOR or
+# CLICOLOR_FORCE, then NO_COLOR (no-color.org), then whether stdout is a
+# terminal. TERM is consulted only on that last path: forcing colour into a
+# dumb terminal is the caller's business.
+color_init() {
+  case "$COLOR_MODE" in
+    never) return 0 ;;
+    always) ;;
+    *)
+      if [ -n "${FORCE_COLOR:-}" ] && [ "$FORCE_COLOR" != 0 ]; then
+        :
+      elif [ -n "${CLICOLOR_FORCE:-}" ] && [ "$CLICOLOR_FORCE" != 0 ]; then
+        :
+      elif [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then
+        return 0
+      else
+        case "${TERM:-}" in
+          '' | dumb) return 0 ;;
+        esac
+      fi
+      ;;
+  esac
+  esc=$(printf '\033')
+  C_OFF="${esc}[0m"
+  C_BOLD="${esc}[1m"
+  C_DIM="${esc}[2m"
+  C_OK="${esc}[32m"
+  C_WARN="${esc}[33m"
+  C_ERR="${esc}[31m"
+  C_PATH="${esc}[36m"
+  C_NUM="${esc}[92m"
+  C_PLAN="${esc}[35m"
+}
+
 cleanup() {
   [ -z "$CANON_TMP" ] || rm -f "$CANON_TMP"
   [ -z "$APPLY_TMP" ] || rm -f "$APPLY_TMP"
@@ -63,7 +116,7 @@ trap 'exit 1' HUP INT TERM
 ensure_private_tmp() {
   if [ -z "$PRIVATE_TMP" ]; then
     PRIVATE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agent-sync.XXXXXXXX") || {
-      echo "agent: could not create a private temporary directory" >&2
+      echo "${C_ERR}agent:${C_OFF} could not create a private temporary directory" >&2
       exit 1
     }
   fi
@@ -111,6 +164,10 @@ Usage:
 
 Target filtering: --only LIST / --skip LIST flags (sync, apply) or the
 AGENT_SYNC_ONLY / AGENT_SYNC_SKIP env vars, comma-separated target names.
+
+Colour: status output is coloured on a terminal and plain everywhere else,
+so pipes, cron and CI are unchanged. --no-color (or NO_COLOR) turns it off,
+--color=always (or FORCE_COLOR) keeps it through a pipe or a pager.
 
 The edit loop: agent gather, edit the staged files, agent apply. Your edits
 land in the original stores, get folded into the synthesized file, and are
@@ -173,7 +230,7 @@ physical_path() {
 require_safe_name() {
   case "$1" in
     "" | */* | .* | *"$NL"*)
-      echo "agent: unsafe name: $1" >&2
+      echo "${C_ERR}agent:${C_OFF} unsafe name: $1" >&2
       exit 2
       ;;
   esac
@@ -211,7 +268,7 @@ sum() {
 
 require_src() {
   if [ ! -f "$SRC" ]; then
-    echo "agent: synthesized memory file not found: $SRC" >&2
+    echo "${C_ERR}agent:${C_OFF} synthesized memory file not found: $SRC" >&2
     echo "create it (or point AGENT_SYNC_SOURCE at yours), then re-run" >&2
     exit 1
   fi
@@ -268,7 +325,7 @@ sources_for() {
       done
       ;;
     *)
-      echo "agent: unknown agent: $1 (try: claude, codex, cursor, continue, windsurf, goose)" >&2
+      echo "${C_ERR}agent:${C_OFF} unknown agent: $1 (try: claude, codex, cursor, continue, windsurf, goose)" >&2
       return 2
       ;;
   esac
@@ -294,7 +351,7 @@ validate_import_section() {
     }
     END { if (bad || open || begins != ends) exit 1 }
   ' "$SRC"; then
-    echo "agent: malformed import markers for $from in $SRC; refusing to modify it" >&2
+    echo "${C_ERR}agent:${C_OFF} malformed import markers for $from in $SRC; refusing to modify it" >&2
     return 1
   fi
 }
@@ -319,7 +376,7 @@ import_into_canon() {
     return
   fi
   CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
-    echo "agent: could not create a temporary file beside $SRC" >&2
+    echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $SRC" >&2
     exit 1
   }
   if [ "$has_section" -eq 1 ] && [ "$found" -gt 0 ]; then
@@ -383,7 +440,7 @@ parse_synthesizer_args() {
       --synthesizer)
         shift
         if [ "$#" -eq 0 ]; then
-          echo "agent: --synthesizer requires a mode" >&2
+          echo "${C_ERR}agent:${C_OFF} --synthesizer requires a mode" >&2
           return 2
         fi
         SYNTHESIZER_REQUEST="$1"
@@ -399,7 +456,7 @@ parse_synthesizer_args() {
       --only)
         shift
         if [ "$#" -eq 0 ]; then
-          echo "agent: --only requires a comma-separated target list" >&2
+          echo "${C_ERR}agent:${C_OFF} --only requires a comma-separated target list" >&2
           return 2
         fi
         TARGET_ONLY="$1"
@@ -410,7 +467,7 @@ parse_synthesizer_args() {
       --skip)
         shift
         if [ "$#" -eq 0 ]; then
-          echo "agent: --skip requires a comma-separated target list" >&2
+          echo "${C_ERR}agent:${C_OFF} --skip requires a comma-separated target list" >&2
           return 2
         fi
         TARGET_SKIP="$1"
@@ -419,7 +476,7 @@ parse_synthesizer_args() {
         TARGET_SKIP=${1#*=}
         ;;
       *)
-        echo "agent: unknown sync option: $1" >&2
+        echo "${C_ERR}agent:${C_OFF} unknown sync option: $1" >&2
         return 2
         ;;
     esac
@@ -433,7 +490,7 @@ validate_synthesizer_request() {
     auto | claude | codex | deterministic) ;;
     *)
       if [ "$SYNTHESIZER_FROM_CLI" -eq 1 ]; then
-        echo "agent: unknown synthesizer mode: $SYNTHESIZER_REQUEST" >&2
+        echo "${C_ERR}agent:${C_OFF} unknown synthesizer mode: $SYNTHESIZER_REQUEST" >&2
         return 2
       fi
       ;;
@@ -444,7 +501,7 @@ require_selected_synthesizer() {
   case "$SYNTHESIZER_REQUEST" in
     claude | codex)
       if ! command -v "$SYNTHESIZER_REQUEST" >/dev/null 2>&1; then
-        echo "agent: requested synthesizer is not installed: $SYNTHESIZER_REQUEST" >&2
+        echo "${C_ERR}agent:${C_OFF} requested synthesizer is not installed: $SYNTHESIZER_REQUEST" >&2
         return 1
       fi
       ;;
@@ -483,29 +540,29 @@ accept_synth_output() {
   kind="$1"
   out="$2"
   CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
-    echo "agent: could not create a temporary file beside $SRC" >&2
+    echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $SRC" >&2
     exit 1
   }
   cp "$out" "$CANON_TMP"
   cp "$SRC" "$SRC.bak"
   mv "$CANON_TMP" "$SRC"
   CANON_TMP=""
-  echo "synthesized via: $kind (previous file at $SRC.bak)"
+  echo "${C_PLAN}synthesized via: $kind${C_OFF} ${C_DIM}(previous file at $SRC.bak)${C_OFF}"
 }
 
 synthesize() {
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "dry-run: would synthesize (mode: $SYNTHESIZER_REQUEST)"
+    echo "${C_PLAN}dry-run: would synthesize (mode: $SYNTHESIZER_REQUEST)${C_OFF}"
     return
   fi
   if [ "$SYNTHESIZER_REQUEST" = "deterministic" ]; then
-    echo "synthesis: deterministic merge"
+    echo "${C_PLAN}synthesis: deterministic merge${C_OFF}"
     return
   fi
   if [ "$SYNTHESIZER_REQUEST" = "auto" ] &&
     ! command -v claude >/dev/null 2>&1 &&
     ! command -v codex >/dev/null 2>&1; then
-    echo "synthesis: deterministic merge (Claude and Codex not installed)"
+    echo "${C_PLAN}synthesis: deterministic merge${C_OFF} ${C_DIM}(Claude and Codex not installed)${C_OFF}"
     return
   fi
   ensure_private_tmp
@@ -534,23 +591,23 @@ EOF
           accept_synth_output "$kind" "$out"
           return
         fi
-        echo "agent: $kind synthesis failed; trying the next fallback" >&2
+        echo "${C_ERR}agent:${C_OFF} $kind synthesis failed; trying the next fallback" >&2
       done
-      echo "synthesis: deterministic merge (no usable Claude or Codex)"
+      echo "${C_PLAN}synthesis: deterministic merge${C_OFF} ${C_DIM}(no usable Claude or Codex)${C_OFF}"
       return
       ;;
     claude | codex)
       if try_synthesizer "$SYNTHESIZER_REQUEST" "$prompt" "$out"; then
         accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
       else
-        echo "agent: $SYNTHESIZER_REQUEST synthesis failed; keeping the deterministic merge" >&2
+        echo "${C_ERR}agent:${C_OFF} $SYNTHESIZER_REQUEST synthesis failed; keeping the deterministic merge" >&2
       fi
       ;;
     *)
       if try_synthesizer custom "$prompt" "$out"; then
         accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
       else
-        echo "agent: custom synthesizer failed; keeping the deterministic merge" >&2
+        echo "${C_ERR}agent:${C_OFF} custom synthesizer failed; keeping the deterministic merge" >&2
       fi
       ;;
   esac
@@ -559,20 +616,20 @@ EOF
 distribute() {
   while IFS='|' read -r name dir dest mode; do
     if ! target_selected "$name"; then
-      echo "$name: skipped (filtered)"
+      echo "$name: ${C_DIM}skipped (filtered)${C_OFF}"
       continue
     fi
     if [ ! -d "$dir" ]; then
-      echo "$name: skipped (not installed)"
+      echo "$name: ${C_DIM}skipped (not installed)${C_OFF}"
       continue
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
-      echo "$name: would sync -> $dest"
+      echo "$name: ${C_PLAN}would sync${C_OFF} ${C_DIM}->${C_OFF} ${C_PATH}$dest${C_OFF}"
       continue
     fi
     mkdir -p "$(dirname "$dest")"
     TARGET_TMP=$(mktemp "$(dirname "$dest")/.agent-sync-target.XXXXXXXX") || {
-      echo "agent: could not create a temporary file beside $dest" >&2
+      echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $dest" >&2
       exit 1
     }
     case "$mode" in
@@ -584,11 +641,11 @@ distribute() {
     if [ -f "$dest" ] && [ ! -f "$dest.orig" ] &&
       [ "$(sum "$dest")" != "$(sum "$TARGET_TMP")" ]; then
       cp "$dest" "$dest.orig"
-      echo "$name: pre-existing file preserved at $dest.orig"
+      echo "$name: ${C_WARN}pre-existing file preserved at${C_OFF} ${C_PATH}$dest.orig${C_OFF}"
     fi
     mv "$TARGET_TMP" "$dest"
     TARGET_TMP=""
-    echo "$name: synced -> $dest"
+    echo "$name: ${C_OK}synced${C_OFF} ${C_DIM}->${C_OFF} ${C_PATH}$dest${C_OFF}"
   done <<EOF
 $(targets)
 EOF
@@ -643,7 +700,7 @@ sync_after_options() {
   for name in claude codex cursor continue windsurf goose; do
     import_agent "$name"
     n="$IMPORTED_COUNT"
-    [ "$n" -gt 0 ] && echo "$name: folded $n memory file(s) in"
+    [ "$n" -gt 0 ] && echo "$name: ${C_DIM}folded $n memory file(s) in${C_OFF}"
   done
   for pname in $(each_pack_name); do
     import_pack "$pname"
@@ -659,11 +716,11 @@ cmd_status() {
   while IFS='|' read -r name dir dest mode; do
     target_selected "$name" || continue
     if [ ! -d "$dir" ]; then
-      echo "$name: not installed"
+      echo "$name: ${C_DIM}not installed${C_OFF}"
       continue
     fi
     if [ ! -f "$dest" ]; then
-      echo "$name: STALE (missing $dest)"
+      echo "$name: ${C_BOLD}${C_WARN}STALE${C_OFF} ${C_DIM}(missing $dest)${C_OFF}"
       fails=$((fails + 1))
       continue
     fi
@@ -677,16 +734,16 @@ cmd_status() {
         ;;
     esac
     if [ "$(sum "$dest")" = "$want" ]; then
-      echo "$name: synced"
+      echo "$name: ${C_OK}synced${C_OFF}"
     else
-      echo "$name: STALE"
+      echo "$name: ${C_BOLD}${C_WARN}STALE${C_OFF}"
       fails=$((fails + 1))
     fi
   done <<EOF
 $(targets)
 EOF
   [ "$fails" -eq 0 ] || {
-    echo "$fails target(s) stale; run: agent sync"
+    echo "${C_WARN}$fails target(s) stale; run: agent sync${C_OFF}"
     exit 1
   }
 }
@@ -694,9 +751,9 @@ EOF
 cmd_targets() {
   while IFS='|' read -r name dir dest mode; do
     if [ -d "$dir" ]; then
-      echo "$name: installed ($dest)"
+      echo "$name: ${C_OK}installed${C_OFF} ${C_DIM}(${C_OFF}${C_PATH}$dest${C_OFF}${C_DIM})${C_OFF}"
     else
-      echo "$name: not installed (would be $dest)"
+      echo "$name: ${C_DIM}not installed (would be $dest)${C_OFF}"
     fi
   done <<EOF
 $(targets)
@@ -706,7 +763,7 @@ EOF
 cmd_migrate() {
   from="${1:-}"
   if [ -z "$from" ]; then
-    echo "usage: agent migrate <claude|codex|cursor|continue|windsurf|goose>" >&2
+    echo "${C_WARN}usage:${C_OFF} agent migrate <claude|codex|cursor|continue|windsurf|goose>" >&2
     exit 2
   fi
   require_src
@@ -714,11 +771,11 @@ cmd_migrate() {
   import_agent "$from"
   n="$IMPORTED_COUNT"
   if [ "$n" -eq 0 ]; then
-    echo "agent: no readable memory stores found for $from" >&2
+    echo "${C_ERR}agent:${C_OFF} no readable memory stores found for $from" >&2
     distribute
     exit 1
   fi
-  echo "$from: folded $n memory file(s) into $SRC"
+  echo "$from: ${C_DIM}folded $n memory file(s) into${C_OFF} ${C_PATH}$SRC${C_OFF}"
   distribute
 }
 
@@ -728,7 +785,7 @@ cmd_gather() {
   # The manifest is written atomically because `apply` treats it as authority.
   manifest="$dest/.agent-manifest"
   MANIFEST_TMP=$(mktemp "$dest/.agent-manifest.XXXXXXXX") || {
-    echo "agent: could not create a temporary manifest in $dest" >&2
+    echo "${C_ERR}agent:${C_OFF} could not create a temporary manifest in $dest" >&2
     exit 1
   }
   gathered=0
@@ -751,9 +808,9 @@ cmd_gather() {
   done
   mv "$MANIFEST_TMP" "$manifest"
   MANIFEST_TMP=""
-  echo "gathered $gathered memory file(s) into $dest"
-  echo "edit the staged files, then push edits everywhere with: agent apply $dest"
-  echo "note: gathered files can contain private context; do not commit them"
+  echo "gathered ${C_NUM}$gathered memory file(s)${C_OFF} into ${C_PATH}$dest${C_OFF}"
+  echo "${C_DIM}edit the staged files, then push edits everywhere with: agent apply $dest${C_OFF}"
+  echo "${C_WARN}note: gathered files can contain private context; do not commit them${C_OFF}"
 }
 
 is_memory_store_path() {
@@ -787,11 +844,11 @@ validate_manifest() {
     if [ -z "$staged" ] || [ -z "$orig" ] ||
       [ "$staged" != "$(basename "$staged")" ] ||
       ! is_memory_store_path "$orig"; then
-      echo "agent: unsafe manifest entry at $manifest:$line" >&2
+      echo "${C_ERR}agent:${C_OFF} unsafe manifest entry at $manifest:$line" >&2
       return 1
     fi
     if [ -L "$dir/$staged" ]; then
-      echo "agent: staged file is a symbolic link at $manifest:$line" >&2
+      echo "${C_ERR}agent:${C_OFF} staged file is a symbolic link at $manifest:$line" >&2
       return 1
     fi
   done <"$manifest"
@@ -807,7 +864,7 @@ cmd_apply() {
       --synthesizer | --only | --skip)
         opt="$1"
         if [ "$#" -lt 2 ]; then
-          echo "agent: $opt requires a value" >&2
+          echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
           return 2
         fi
         case "$opt" in
@@ -829,7 +886,7 @@ cmd_apply() {
       --skip=*) TARGET_SKIP=${1#*=}; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --*)
-        echo "agent: unknown apply option: $1" >&2
+        echo "${C_ERR}agent:${C_OFF} unknown apply option: $1" >&2
         return 2
         ;;
       *)
@@ -837,7 +894,7 @@ cmd_apply() {
           dir="$1"
           found_dir=1
         else
-          echo "agent: unexpected apply argument: $1" >&2
+          echo "${C_ERR}agent:${C_OFF} unexpected apply argument: $1" >&2
           return 2
         fi
         shift
@@ -847,12 +904,12 @@ cmd_apply() {
   validate_synthesizer_request
   manifest="$dir/.agent-manifest"
   if [ ! -f "$manifest" ]; then
-    echo "agent: $dir is not a gather directory (missing .agent-manifest)" >&2
+    echo "${C_ERR}agent:${C_OFF} $dir is not a gather directory (missing .agent-manifest)" >&2
     echo "stage stores first with: agent gather $dir" >&2
     exit 1
   fi
   if [ -L "$manifest" ]; then
-    echo "agent: refusing symbolic-link manifest: $manifest" >&2
+    echo "${C_ERR}agent:${C_OFF} refusing symbolic-link manifest: $manifest" >&2
     exit 1
   fi
   require_src
@@ -867,24 +924,39 @@ cmd_apply() {
     [ -f "$s" ] || continue
     if [ ! -f "$orig" ] || [ "$(sum "$s")" != "$(sum "$orig")" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
-        echo "dry-run: would update store: $orig"
+        echo "${C_PLAN}dry-run: would update store:${C_OFF} ${C_PATH}$orig${C_OFF}"
         updated=$((updated + 1))
         continue
       fi
       mkdir -p "$(dirname "$orig")"
       APPLY_TMP=$(mktemp "$(dirname "$orig")/.agent-sync-apply.XXXXXXXX") || {
-        echo "agent: could not create a temporary file beside $orig" >&2
+        echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $orig" >&2
         exit 1
       }
       cp "$s" "$APPLY_TMP"
       mv "$APPLY_TMP" "$orig"
       APPLY_TMP=""
-      echo "updated store: $orig"
+      echo "updated store: ${C_PATH}$orig${C_OFF}"
       updated=$((updated + 1))
     fi
   done <"$manifest"
-  echo "$updated store file(s) updated from $dir"
+  echo "${C_NUM}$updated store file(s)${C_OFF} updated from ${C_PATH}$dir${C_OFF}"
   sync_after_options
+}
+
+# Paint a unified diff. Only ever reached with colour on, so the plain path
+# stays a bare `diff -u` and its bytes are untouched for CI and pipes.
+color_diff() {
+  while IFS= read -r cd_line; do
+    case "$cd_line" in
+      +++* | ---*) printf '%s%s%s\n' "$C_BOLD" "$cd_line" "$C_OFF" ;;
+      @@*) printf '%s%s%s\n' "$C_PATH" "$cd_line" "$C_OFF" ;;
+      +*) printf '%s%s%s\n' "$C_OK" "$cd_line" "$C_OFF" ;;
+      -*) printf '%s%s%s\n' "$C_ERR" "$cd_line" "$C_OFF" ;;
+      \\*) printf '%s%s%s\n' "$C_DIM" "$cd_line" "$C_OFF" ;;
+      *) printf '%s\n' "$cd_line" ;;
+    esac
+  done
 }
 
 # Show exactly what is stale, as unified diffs. Exits 1 when anything is
@@ -902,22 +974,26 @@ cmd_diff() {
       expected="$PRIVATE_TMP/diff-expected"
     fi
     if [ ! -f "$dest" ]; then
-      echo "=== $name: $dest is missing"
+      echo "${C_BOLD}=== $name: $dest is missing${C_OFF}"
       stale=$((stale + 1))
       continue
     fi
     if ! cmp -s "$dest" "$expected"; then
-      echo "=== $name: $dest"
-      diff -u "$dest" "$expected" || true
+      echo "${C_BOLD}=== $name: $dest${C_OFF}"
+      if color_on; then
+        diff -u "$dest" "$expected" | color_diff || true
+      else
+        diff -u "$dest" "$expected" || true
+      fi
       stale=$((stale + 1))
     fi
   done <<EOF
 $(targets)
 EOF
   if [ "$stale" -eq 0 ]; then
-    echo "all targets in sync"
+    echo "${C_OK}all targets in sync${C_OFF}"
   else
-    echo "$stale stale target(s); run: agent sync"
+    echo "${C_WARN}$stale stale target(s); run: agent sync${C_OFF}"
     exit 1
   fi
 }
@@ -929,17 +1005,17 @@ cmd_revert() {
   while IFS='|' read -r name dir dest mode; do
     [ -f "$dest.orig" ] || continue
     mv "$dest.orig" "$dest"
-    echo "$name: restored $dest from its .orig backup"
+    echo "$name: ${C_OK}restored${C_OFF} ${C_PATH}$dest${C_OFF} ${C_DIM}from its .orig backup${C_OFF}"
     restored=$((restored + 1))
   done <<EOF
 $(targets)
 EOF
   if [ -f "$SRC.bak" ]; then
     cp "$SRC.bak" "$SRC"
-    echo "synthesized file restored from $SRC.bak"
+    echo "${C_OK}synthesized file restored${C_OFF} ${C_DIM}from $SRC.bak${C_OFF}"
     restored=$((restored + 1))
   fi
-  [ "$restored" -gt 0 ] || echo "nothing to revert (no .orig or .bak files found)"
+  [ "$restored" -gt 0 ] || echo "${C_DIM}nothing to revert (no .orig or .bak files found)${C_OFF}"
 }
 
 # Diagnose the setup: file present, markers well-formed, targets detected,
@@ -949,18 +1025,18 @@ cmd_doctor() {
   # Pre-create the private tmp: the status probe below runs in a subshell,
   # which resets the EXIT trap, so it must not be the one to create it.
   ensure_private_tmp
-  echo "agent v$VERSION"
-  echo "synthesized file: $SRC"
+  echo "${C_BOLD}agent v$VERSION${C_OFF}"
+  echo "synthesized file: ${C_PATH}$SRC${C_OFF}"
   if [ -f "$SRC" ]; then
-    echo "ok: synthesized file exists ($(wc -l <"$SRC" | tr -d ' ') lines)"
+    echo "${C_OK}ok:${C_OFF} synthesized file exists ($(wc -l <"$SRC" | tr -d ' ') lines)"
     for name in claude codex cursor continue windsurf goose; do
       if ! validate_import_section "$name" 2>/dev/null; then
-        echo "PROBLEM: malformed import markers for $name in $SRC"
+        echo "${C_ERR}PROBLEM:${C_OFF} malformed import markers for $name in $SRC"
         problems=$((problems + 1))
       fi
     done
   else
-    echo "PROBLEM: synthesized file is missing; create it, then run agent sync"
+    echo "${C_ERR}PROBLEM:${C_OFF} synthesized file is missing; create it, then run agent sync"
     problems=$((problems + 1))
   fi
   installed=0
@@ -970,27 +1046,27 @@ cmd_doctor() {
 $(targets)
 EOF
   if [ "$installed" -gt 0 ]; then
-    echo "ok: $installed sync target(s) detected (agent targets lists them)"
+    echo "${C_OK}ok:${C_OFF} $installed sync target(s) detected (agent targets lists them)"
   else
-    echo "PROBLEM: no agents detected under $AGENT_HOME"
+    echo "${C_ERR}PROBLEM:${C_OFF} no agents detected under $AGENT_HOME"
     problems=$((problems + 1))
   fi
   for cli in claude codex; do
     if command -v "$cli" >/dev/null 2>&1; then
-      echo "ok: $cli CLI available for semantic synthesis"
+      echo "${C_OK}ok:${C_OFF} $cli CLI available for semantic synthesis"
     else
-      echo "note: $cli CLI not installed (auto synthesis skips it)"
+      echo "${C_DIM}note: $cli CLI not installed (auto synthesis skips it)${C_OFF}"
     fi
   done
-  [ -f "$SRC.bak" ] && echo "note: last synthesis backup at $SRC.bak"
+  [ -f "$SRC.bak" ] && echo "${C_DIM}note: last synthesis backup at $SRC.bak${C_OFF}"
   if [ -f "$SRC" ] && ! (cmd_status) >/dev/null 2>&1; then
-    echo "PROBLEM: targets are stale (agent diff shows details; agent sync fixes)"
+    echo "${C_ERR}PROBLEM:${C_OFF} targets are stale (agent diff shows details; agent sync fixes)"
     problems=$((problems + 1))
   fi
   if [ "$problems" -eq 0 ]; then
-    echo "doctor: no problems found"
+    echo "${C_OK}doctor: no problems found${C_OFF}"
   else
-    echo "doctor: $problems problem(s) found"
+    echo "${C_ERR}doctor: $problems problem(s) found${C_OFF}"
     exit 1
   fi
 }
@@ -1006,14 +1082,14 @@ cmd_link() {
     case "$a" in
       --import) do_import=1 ;;
       -*)
-        echo "agent: unknown link option: $a" >&2
+        echo "${C_ERR}agent:${C_OFF} unknown link option: $a" >&2
         exit 2
         ;;
       *) dir="$a" ;;
     esac
   done
   if [ ! -d "$dir" ]; then
-    echo "agent: not a directory: $dir" >&2
+    echo "${C_ERR}agent:${C_OFF} not a directory: $dir" >&2
     exit 2
   fi
   agents_md="$dir/AGENTS.md"
@@ -1022,38 +1098,38 @@ cmd_link() {
   if [ ! -f "$agents_md" ]; then
     if [ -f "$claude_md" ]; then
       cp "$claude_md" "$agents_md"
-      echo "link: seeded AGENTS.md from the existing CLAUDE.md"
+      echo "${C_DIM}link:${C_OFF} seeded AGENTS.md from the existing CLAUDE.md"
     else
       printf '# Project instructions\n\nShared instructions for every AI coding agent working in this repository.\n' >"$agents_md"
-      echo "link: created a starter AGENTS.md"
+      echo "${C_DIM}link:${C_OFF} created a starter AGENTS.md"
     fi
   fi
   if [ ! -f "$claude_md" ]; then
     printf '%s\n' "$stub" >"$claude_md"
-    echo "link: created CLAUDE.md stub importing AGENTS.md"
+    echo "${C_DIM}link:${C_OFF} created CLAUDE.md stub importing AGENTS.md"
   elif [ "$(head -1 "$claude_md")" = "$stub" ]; then
-    echo "link: CLAUDE.md already imports AGENTS.md"
+    echo "${C_DIM}link:${C_OFF} CLAUDE.md already imports AGENTS.md"
   elif cmp -s "$claude_md" "$agents_md"; then
     printf '%s\n' "$stub" >"$claude_md"
-    echo "link: CLAUDE.md now imports AGENTS.md (content was identical)"
+    echo "${C_DIM}link:${C_OFF} CLAUDE.md now imports AGENTS.md (content was identical)"
   else
-    echo "link: CLAUDE.md has its own content; left untouched (put $stub on its first line to bridge it)"
+    echo "${C_DIM}link:${C_OFF} CLAUDE.md has its own content; left untouched (put $stub on its first line to bridge it)"
   fi
   gemini_settings="$dir/.gemini/settings.json"
   if [ -f "$gemini_settings" ]; then
     if grep -q 'AGENTS\.md' "$gemini_settings"; then
-      echo "link: Gemini CLI already configured for AGENTS.md"
+      echo "${C_DIM}link:${C_OFF} Gemini CLI already configured for AGENTS.md"
     else
-      echo "link: $gemini_settings exists; add {\"context\":{\"fileName\":[\"AGENTS.md\",\"GEMINI.md\"]}} yourself (not overwriting your settings)"
+      echo "${C_DIM}link:${C_OFF} ${C_WARN}$gemini_settings exists; add {\"context\":{\"fileName\":[\"AGENTS.md\",\"GEMINI.md\"]}} yourself (not overwriting your settings)${C_OFF}"
     fi
   else
     mkdir -p "$dir/.gemini"
     printf '{\n  "context": { "fileName": ["AGENTS.md", "GEMINI.md"] }\n}\n' >"$gemini_settings"
-    echo "link: created .gemini/settings.json so Gemini CLI reads AGENTS.md"
+    echo "${C_DIM}link:${C_OFF} created .gemini/settings.json so Gemini CLI reads AGENTS.md"
   fi
   for shadow in .rules .cursorrules .windsurfrules .clinerules .github/copilot-instructions.md AGENT.md; do
     if [ -e "$dir/$shadow" ]; then
-      echo "link: note: $shadow shadows AGENTS.md in Zed (first-match order)"
+      echo "${C_DIM}link:${C_OFF} ${C_WARN}note: $shadow shadows AGENTS.md in Zed (first-match order)${C_OFF}"
     fi
   done
   # --import: fold the repo's native per-tool configs into AGENTS.md under a
@@ -1086,16 +1162,16 @@ cmd_link() {
       if validate_import_section "project"; then
         import_into_canon "project" "$content" "$found"
         SRC="$old_src"
-        echo "link: imported $found native config file(s) into AGENTS.md"
+        echo "${C_DIM}link:${C_OFF} imported ${C_NUM}$found native config file(s)${C_OFF} into AGENTS.md"
       else
         SRC="$old_src"
         exit 1
       fi
     else
-      echo "link: no native agent configs found to import"
+      echo "${C_DIM}link:${C_OFF} no native agent configs found to import"
     fi
   fi
-  echo "link: done; AGENTS.md is the single project instructions file"
+  echo "${C_DIM}link:${C_OFF} ${C_OK}done; AGENTS.md is the single project instructions file${C_OFF}"
 }
 
 pack_lock_remove() {
@@ -1114,7 +1190,7 @@ cmd_pack() {
     add)
       spec="${2:-}"
       if [ -z "$spec" ]; then
-        echo "usage: agent pack add OWNER/REPO[@REF][:SUBDIR]" >&2
+        echo "${C_WARN}usage:${C_OFF} agent pack add OWNER/REPO[@REF][:SUBDIR]" >&2
         exit 2
       fi
       subdir=""
@@ -1132,7 +1208,7 @@ cmd_pack() {
       case "$spec" in
         */*) ;;
         *)
-          echo "agent: pack source must be OWNER/REPO" >&2
+          echo "${C_ERR}agent:${C_OFF} pack source must be OWNER/REPO" >&2
           exit 2
           ;;
       esac
@@ -1144,7 +1220,7 @@ cmd_pack() {
       sha=$(curl -fsSL "https://api.github.com/repos/$spec/commits/$ref" |
         sed -n 's/^  "sha": *"\([0-9a-f]*\)".*/\1/p' | head -1)
       if [ -z "$sha" ]; then
-        echo "agent: could not resolve $spec@$ref" >&2
+        echo "${C_ERR}agent:${C_OFF} could not resolve $spec@$ref" >&2
         exit 1
       fi
       ensure_private_tmp
@@ -1155,7 +1231,7 @@ cmd_pack() {
       srcdir="$archive_root"
       [ -n "$subdir" ] && srcdir="$archive_root/$subdir"
       if [ ! -d "$srcdir" ]; then
-        echo "agent: subdir not found in pack: $subdir" >&2
+        echo "${C_ERR}agent:${C_OFF} subdir not found in pack: $subdir" >&2
         exit 1
       fi
       root_phys=$(physical_path "$archive_root")
@@ -1163,7 +1239,7 @@ cmd_pack() {
       case "$src_phys/" in
         "$root_phys/" | "$root_phys"/*) ;;
         *)
-          echo "agent: pack subdir escapes the downloaded repository: $subdir" >&2
+          echo "${C_ERR}agent:${C_OFF} pack subdir escapes the downloaded repository: $subdir" >&2
           exit 1
           ;;
       esac
@@ -1183,7 +1259,7 @@ cmd_pack() {
         copied=$((copied + 1))
       done
       if [ "$copied" -eq 0 ]; then
-        echo "agent: no markdown files found in $spec${subdir:+:$subdir}; keeping any existing pack content" >&2
+        echo "${C_ERR}agent:${C_OFF} no markdown files found in $spec${subdir:+:$subdir}; keeping any existing pack content" >&2
         exit 1
       fi
       mkdir -p "$PACKS_DIR"
@@ -1193,23 +1269,23 @@ cmd_pack() {
       touch "$PACKS_LOCK"
       pack_lock_remove "$pname"
       printf '%s\t%s\t%s\t%s\n' "$pname" "$spec${subdir:+:$subdir}" "$ref" "$sha" >>"$PACKS_LOCK"
-      echo "pack $pname: $copied file(s) pinned at $spec@$(printf '%.12s' "$sha")"
-      echo "run: agent sync (folds the pack into the synthesized file)"
+      echo "pack $pname: ${C_NUM}$copied file(s)${C_OFF} pinned at $spec@$(printf '%.12s' "$sha")"
+      echo "${C_DIM}run: agent sync (folds the pack into the synthesized file)${C_OFF}"
       ;;
     list)
       if [ -s "$PACKS_LOCK" ] 2>/dev/null; then
         while IFS="$TAB" read -r pname psrc pref psha; do
           [ -n "$pname" ] || continue
-          echo "$pname: $psrc@$pref (pinned $(printf '%.12s' "$psha"))"
+          echo "$pname: $psrc@$pref ${C_DIM}(pinned $(printf '%.12s' "$psha"))${C_OFF}"
         done <"$PACKS_LOCK"
       else
-        echo "no packs installed (agent pack add OWNER/REPO)"
+        echo "${C_DIM}no packs installed (agent pack add OWNER/REPO)${C_OFF}"
       fi
       ;;
     update)
       only="${2:-}"
       [ -f "$PACKS_LOCK" ] || {
-        echo "no packs installed"
+        echo "${C_DIM}no packs installed${C_OFF}"
         exit 0
       }
       ensure_private_tmp
@@ -1220,13 +1296,15 @@ cmd_pack() {
         base=${psrc%%:*}
         sub=""
         case "$psrc" in *:*) sub=${psrc#*:} ;; esac
-        "$0" pack add "$base@$pref${sub:+:$sub}"
+        # The colour decision does not survive re-exec on its own: stdout may
+        # be a pipe here while the caller forced colour on.
+        "$0" "--color=$COLOR_MODE" pack add "$base@$pref${sub:+:$sub}"
       done <"$PRIVATE_TMP/lock-snapshot"
       ;;
     remove)
       pname="${2:-}"
       if [ -z "$pname" ]; then
-        echo "usage: agent pack remove NAME" >&2
+        echo "${C_WARN}usage:${C_OFF} agent pack remove NAME" >&2
         exit 2
       fi
       require_safe_name "$pname"
@@ -1237,10 +1315,10 @@ cmd_pack() {
         : >"$PRIVATE_TMP/empty"
         import_into_canon "pack:$pname" "$PRIVATE_TMP/empty" 0
       fi
-      echo "pack $pname removed; run: agent sync"
+      echo "pack $pname ${C_OK}removed${C_OFF}${C_DIM}; run: agent sync${C_OFF}"
       ;;
     *)
-      echo "usage: agent pack <add|list|update|remove>" >&2
+      echo "${C_WARN}usage:${C_OFF} agent pack <add|list|update|remove>" >&2
       exit 2
       ;;
   esac
@@ -1351,7 +1429,7 @@ mcp_add_cli() {
         codex mcp add "$mca_name" "$@" >/dev/null
       else
         if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
-          echo "codex: note: the codex CLI takes no custom headers; header(s) omitted for $mca_name" >&2
+          echo "codex: ${C_WARN}note: the codex CLI takes no custom headers; header(s) omitted for $mca_name${C_OFF}" >&2
         fi
         codex mcp add "$mca_name" --url "$MCP_URL" >/dev/null
       fi
@@ -1384,7 +1462,7 @@ mcp_add_cli() {
         amp mcp add "$mca_name" "$@" >/dev/null
       else
         if [ -s "$PRIVATE_TMP/mcp-headers" ]; then
-          echo "amp: note: the amp CLI takes no custom headers; header(s) omitted for $mca_name" >&2
+          echo "amp: ${C_WARN}note: the amp CLI takes no custom headers; header(s) omitted for $mca_name${C_OFF}" >&2
         fi
         amp mcp add "$mca_name" "$MCP_URL" >/dev/null
       fi
@@ -1449,10 +1527,10 @@ mcp_push_cli() {
     return
   fi
 
-  echo "$mcp_tool: restoring the previous $mcp_name configuration" >&2
+  echo "$mcp_tool: ${C_WARN}restoring the previous $mcp_name configuration${C_OFF}" >&2
   mcp_load_spec "$mcp_applied"
   if ! mcp_add_cli "$mcp_tool" "$mcp_name"; then
-    echo "$mcp_tool: rollback FAILED for $mcp_name" >&2
+    echo "$mcp_tool: ${C_BOLD}${C_ERR}rollback FAILED${C_OFF} for $mcp_name" >&2
   fi
   return 1
 }
@@ -1466,9 +1544,9 @@ mcp_remove_stale_for_tool() {
     [ -f "$MCP_DIR/$mrs_name.spec" ] && continue
     if mcp_remove_cli "$mrs_tool" "$mrs_name"; then
       rm -f "$mrs_applied"
-      echo "$mrs_tool: $mrs_name removed"
+      echo "$mrs_tool: $mrs_name ${C_OK}removed${C_OFF}"
     else
-      echo "$mrs_tool: $mrs_name removal FAILED" >&2
+      echo "$mrs_tool: $mrs_name ${C_BOLD}${C_ERR}removal FAILED${C_OFF}" >&2
       mrs_failures=$((mrs_failures + 1))
     fi
   done
@@ -1503,7 +1581,7 @@ mcp_write_owned_file() {
   dest="$2"
   mcp_require_safe_ownership_file || return 1
   if [ -f "$dest" ] && ! grep -qxF "$dest" "$MCP_OWNED" 2>/dev/null; then
-    echo "mcp: $dest exists and is not agent-sync managed; add servers there yourself"
+    echo "mcp: ${C_WARN}$dest exists and is not agent-sync managed; add servers there yourself${C_OFF}"
     return 0
   fi
   mkdir -p "$(dirname "$dest")"
@@ -1519,7 +1597,7 @@ mcp_write_owned_file() {
       name=$(basename "$spec" .spec)
       mcp_load_spec "$spec"
       if [ "$style" = "kiro" ] && [ "$MCP_TYPE" != "stdio" ]; then
-        echo "kiro: $name skipped (kiro's user MCP file is documented for stdio servers only)" >&2
+        echo "kiro: ${C_DIM}$name skipped (kiro's user MCP file is documented for stdio servers only)${C_OFF}" >&2
         continue
       fi
       [ "$first" -eq 1 ] || printf ',\n'
@@ -1531,7 +1609,7 @@ mcp_write_owned_file() {
   mv "$MCP_TMP" "$dest"
   MCP_TMP=""
   mcp_record_owned_file "$dest"
-  echo "mcp: wrote $dest"
+  echo "mcp: wrote ${C_PATH}$dest${C_OFF}"
 }
 
 cmd_mcp() {
@@ -1543,7 +1621,7 @@ cmd_mcp() {
     add)
       name="${1:-}"
       if [ -z "$name" ]; then
-        echo "usage: agent mcp add NAME [--env K=V]... -- COMMAND [ARGS...]" >&2
+        echo "${C_WARN}usage:${C_OFF} agent mcp add NAME [--env K=V]... -- COMMAND [ARGS...]" >&2
         echo "       agent mcp add NAME --url URL [--header 'K: V']..." >&2
         exit 2
       fi
@@ -1560,11 +1638,11 @@ cmd_mcp() {
           --env | --header | --url)
             opt="$1"
             if [ "$#" -lt 2 ]; then
-              echo "agent: $opt requires a value" >&2
+              echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
               exit 2
             fi
             case "$2" in *"$NL"*)
-              echo "agent: $opt values must not contain newlines" >&2
+              echo "${C_ERR}agent:${C_OFF} $opt values must not contain newlines" >&2
               exit 2
               ;;
             esac
@@ -1581,13 +1659,13 @@ cmd_mcp() {
           --)
             shift
             if [ "$#" -eq 0 ]; then
-              echo "agent: -- must be followed by a command" >&2
+              echo "${C_ERR}agent:${C_OFF} -- must be followed by a command" >&2
               exit 2
             fi
             mtype="stdio"
             for v in "$@"; do
               case "$v" in *"$NL"*)
-                echo "agent: command and args must not contain newlines" >&2
+                echo "${C_ERR}agent:${C_OFF} command and args must not contain newlines" >&2
                 exit 2
                 ;;
               esac
@@ -1601,17 +1679,17 @@ cmd_mcp() {
             break
             ;;
           *)
-            echo "agent: unknown mcp add option: $1" >&2
+            echo "${C_ERR}agent:${C_OFF} unknown mcp add option: $1" >&2
             exit 2
             ;;
         esac
       done
       if [ -z "$mtype" ]; then
-        echo "agent: mcp add needs either '-- COMMAND' or '--url URL'" >&2
+        echo "${C_ERR}agent:${C_OFF} mcp add needs either '-- COMMAND' or '--url URL'" >&2
         exit 2
       fi
       MCP_TMP=$(mktemp "$MCP_DIR/.agent-sync-mcp-spec.XXXXXXXX") || {
-        echo "agent: could not create an MCP registry temporary file" >&2
+        echo "${C_ERR}agent:${C_OFF} could not create an MCP registry temporary file" >&2
         exit 1
       }
       {
@@ -1621,7 +1699,7 @@ cmd_mcp() {
       } >"$MCP_TMP"
       mv "$MCP_TMP" "$spec"
       MCP_TMP=""
-      echo "mcp: registered $name ($mtype); run: agent mcp sync"
+      echo "mcp: ${C_OK}registered $name${C_OFF} ${C_DIM}($mtype); run: agent mcp sync${C_OFF}"
       ;;
     list)
       found=0
@@ -1629,24 +1707,24 @@ cmd_mcp() {
         [ -f "$spec" ] || continue
         mcp_load_spec "$spec"
         if [ "$MCP_TYPE" = "stdio" ]; then
-          echo "$(basename "$spec" .spec): stdio $MCP_CMD"
+          echo "$(basename "$spec" .spec): ${C_DIM}stdio${C_OFF} $MCP_CMD"
         else
-          echo "$(basename "$spec" .spec): http $MCP_URL"
+          echo "$(basename "$spec" .spec): ${C_DIM}http${C_OFF} ${C_PATH}$MCP_URL${C_OFF}"
         fi
         found=1
       done
-      [ "$found" -eq 1 ] || echo "no MCP servers registered (agent mcp add NAME -- COMMAND)"
+      [ "$found" -eq 1 ] || echo "${C_DIM}no MCP servers registered (agent mcp add NAME -- COMMAND)${C_OFF}"
       ;;
     remove)
       name="${1:-}"
       if [ -z "$name" ]; then
-        echo "usage: agent mcp remove NAME" >&2
+        echo "${C_WARN}usage:${C_OFF} agent mcp remove NAME" >&2
         exit 2
       fi
       require_safe_name "$name"
       rm -f "$MCP_DIR/$name.spec"
-      echo "mcp: $name removed from the registry; next mcp sync removes agent-sync-managed copies."
-      echo "copies that predate applied-state tracking may need one manual removal"
+      echo "mcp: $name ${C_OK}removed from the registry${C_OFF}${C_DIM}; next mcp sync removes agent-sync-managed copies.${C_OFF}"
+      echo "${C_DIM}copies that predate applied-state tracking may need one manual removal${C_OFF}"
       ;;
     sync)
       mcp_require_safe_ownership_file || return 1
@@ -1665,15 +1743,15 @@ cmd_mcp() {
             amp) tdir="$AGENT_HOME/.config/amp" ;;
           esac
           if ! target_selected "$tool"; then
-            echo "$tool: skipped (filtered)"
+            echo "$tool: ${C_DIM}skipped (filtered)${C_OFF}"
             continue
           fi
           if [ ! -d "$tdir" ]; then
-            echo "$tool: skipped (not installed)"
+            echo "$tool: ${C_DIM}skipped (not installed)${C_OFF}"
             continue
           fi
           if ! command -v "$tool" >/dev/null 2>&1; then
-            echo "$tool: skipped (CLI not on PATH)"
+            echo "$tool: ${C_DIM}skipped (CLI not on PATH)${C_OFF}"
             continue
           fi
           if ! mcp_remove_stale_for_tool "$tool"; then
@@ -1683,15 +1761,15 @@ cmd_mcp() {
             [ -f "$spec" ] || continue
             name=$(basename "$spec" .spec)
             if mcp_push_cli "$tool" "$name" "$spec"; then
-              echo "$tool: $name configured"
+              echo "$tool: $name ${C_OK}configured${C_OFF}"
             else
-              echo "$tool: $name FAILED" >&2
+              echo "$tool: $name ${C_BOLD}${C_ERR}FAILED${C_OFF}" >&2
               mcp_failures=$((mcp_failures + 1))
             fi
           done
       done
       if [ "$found" -eq 0 ]; then
-        echo "no MCP servers registered (agent mcp add NAME -- COMMAND)"
+        echo "${C_DIM}no MCP servers registered (agent mcp add NAME -- COMMAND)${C_OFF}"
       fi
       # Dedicated-file tools: rewrite only files agent-sync owns. This runs
       # even with an empty registry, so removing the last server actually
@@ -1705,20 +1783,20 @@ cmd_mcp() {
       if target_selected kiro && [ -d "$AGENT_HOME/.kiro" ]; then
         mcp_write_owned_file kiro "$AGENT_HOME/.kiro/settings/mcp.json"
       fi
-      echo "note: zed, opencode, goose and continue keep MCP in shared config files;"
-      echo "agent-sync will not edit those. See: agent mcp snippet NAME"
+      echo "${C_DIM}note: zed, opencode, goose and continue keep MCP in shared config files;${C_OFF}"
+      echo "${C_DIM}agent-sync will not edit those. See: agent mcp snippet NAME${C_OFF}"
       [ "$mcp_failures" -eq 0 ] || return 1
       ;;
     snippet)
       name="${1:-}"
       if [ -z "$name" ]; then
-        echo "usage: agent mcp snippet NAME" >&2
+        echo "${C_WARN}usage:${C_OFF} agent mcp snippet NAME" >&2
         exit 2
       fi
       require_safe_name "$name"
       spec="$MCP_DIR/$name.spec"
       if [ ! -f "$spec" ]; then
-        echo "agent: unknown MCP server: $name" >&2
+        echo "${C_ERR}agent:${C_OFF} unknown MCP server: $name" >&2
         exit 2
       fi
       mcp_load_spec "$spec"
@@ -1793,7 +1871,7 @@ cmd_mcp() {
       fi
       ;;
     *)
-      echo "usage: agent mcp <add|list|remove|sync|snippet>" >&2
+      echo "${C_WARN}usage:${C_OFF} agent mcp <add|list|remove|sync|snippet>" >&2
       exit 2
       ;;
   esac
@@ -1850,7 +1928,7 @@ skill_sync_one() {
         skill_record_owned "$sso_dest"
         return
       fi
-      echo "skills: collision at $sso_dest; left the existing skill untouched" >&2
+      echo "skills: ${C_WARN}collision at $sso_dest; left the existing skill untouched${C_OFF}" >&2
       return 1
     fi
   fi
@@ -1884,12 +1962,12 @@ cmd_skills() {
   case "$sub" in
     sync) ;;
     *)
-      echo "usage: agent skills sync" >&2
+      echo "${C_WARN}usage:${C_OFF} agent skills sync" >&2
       exit 2
       ;;
   esac
   if [ ! -d "$SKILLS_SOURCE" ]; then
-    echo "agent: skills source not found: $SKILLS_SOURCE" >&2
+    echo "${C_ERR}agent:${C_OFF} skills source not found: $SKILLS_SOURCE" >&2
     echo "set AGENT_SYNC_SKILLS_SOURCE to your canonical skills directory" >&2
     exit 1
   fi
@@ -1913,7 +1991,7 @@ cmd_skills() {
     # failing the whole run made the command unusable wherever one existed.
     if [ -L "$skill_path" ] || [ -L "$skill/SKILL.md" ] ||
       [ -n "$(find "$skill_path" -type l -print -quit)" ]; then
-      echo "skills: skipping $(basename "$skill_path") (symbolic link in source)"
+      echo "skills: ${C_DIM}skipping $(basename "$skill_path") (symbolic link in source)${C_OFF}"
       linked=$((linked + 1))
       continue
     fi
@@ -1921,22 +1999,22 @@ cmd_skills() {
     count=$((count + 1))
   done
   if [ "$count" -eq 0 ]; then
-    echo "no skills found in $SKILLS_SOURCE (a skill is a directory with SKILL.md)"
+    echo "${C_DIM}no skills found in $SKILLS_SOURCE (a skill is a directory with SKILL.md)${C_OFF}"
     exit 0
   fi
   src_phys=$(physical_path "$SKILLS_SOURCE")
   if [ -z "$src_phys" ]; then
-    echo "agent: could not resolve the skills source path" >&2
+    echo "${C_ERR}agent:${C_OFF} could not resolve the skills source path" >&2
     exit 1
   fi
   skill_failures=0
   while IFS='|' read -r name dir dest; do
     if ! target_selected "$name"; then
-      echo "$name: skipped (filtered)"
+      echo "$name: ${C_DIM}skipped (filtered)${C_OFF}"
       continue
     fi
     if [ ! -d "$dir" ]; then
-      echo "$name: skipped (not installed)"
+      echo "$name: ${C_DIM}skipped (not installed)${C_OFF}"
       continue
     fi
     mkdir -p "$dest"
@@ -1944,12 +2022,12 @@ cmd_skills() {
     # source would otherwise let the rm -rf below destroy canonical skills.
     dest_phys=$(physical_path "$dest")
     if [ -z "$dest_phys" ] || [ "$dest_phys" = "$src_phys" ]; then
-      echo "$name: skipped (skills dir resolves to the source)"
+      echo "$name: ${C_DIM}skipped (skills dir resolves to the source)${C_OFF}"
       continue
     fi
     case "$dest_phys/" in
       "$src_phys"/*)
-        echo "$name: skipped (skills dir resolves inside the source)"
+        echo "$name: ${C_DIM}skipped (skills dir resolves inside the source)${C_OFF}"
         continue
         ;;
     esac
@@ -1963,14 +2041,14 @@ cmd_skills() {
         skill_failures=$((skill_failures + 1))
       fi
     done <"$eligible"
-    echo "$name: $synced skill(s) -> $dest"
+    echo "$name: ${C_NUM}$synced skill(s)${C_OFF} ${C_DIM}->${C_OFF} ${C_PATH}$dest${C_OFF}"
   done <<EOF
 $(skills_targets)
 EOF
   if [ "$linked" -gt 0 ]; then
-    echo "source: $SKILLS_SOURCE ($count skill(s); $linked skipped as symbolic links)"
+    echo "${C_DIM}source: $SKILLS_SOURCE ($count skill(s); $linked skipped as symbolic links)${C_OFF}"
   else
-    echo "source: $SKILLS_SOURCE ($count skill(s))"
+    echo "${C_DIM}source: $SKILLS_SOURCE ($count skill(s))${C_OFF}"
   fi
   [ "$skill_failures" -eq 0 ] || return 1
 }
@@ -2051,11 +2129,46 @@ EOF
       ;;
     claude | codex | gemini | opencode) ;;
     *)
-      echo "usage: agent hooks [claude|codex|gemini|opencode]" >&2
+      echo "${C_WARN}usage:${C_OFF} agent hooks [claude|codex|gemini|opencode]" >&2
       exit 2
       ;;
   esac
 }
+
+# Colour flags are global, so they are pulled out of the argument list before
+# the subcommand ever sees them. Everything after a literal `--` is left
+# alone: `agent mcp add NAME -- server --no-color` is the server's flag.
+argc=$#
+passthrough=0
+while [ "$argc" -gt 0 ]; do
+  arg="$1"
+  shift
+  argc=$((argc - 1))
+  if [ "$passthrough" -eq 0 ]; then
+    case "$arg" in
+      --) passthrough=1 ;;
+      --color | --colour | --color=always | --colour=always)
+        COLOR_MODE=always
+        continue
+        ;;
+      --no-color | --no-colour | --color=never | --colour=never)
+        COLOR_MODE=never
+        continue
+        ;;
+      --color=auto | --colour=auto)
+        COLOR_MODE=auto
+        continue
+        ;;
+      --color=* | --colour=*)
+        # Plain: the palette is not resolved until color_init below.
+        echo "agent: unknown colour mode: ${arg#*=} (use always, never or auto)" >&2
+        exit 2
+        ;;
+    esac
+  fi
+  set -- "$@" "$arg"
+done
+color_init
 
 case "${1:-help}" in
   sync)
@@ -2102,7 +2215,7 @@ case "${1:-help}" in
   version | --version | -v) echo "agent v$VERSION" ;;
   help | --help | -h) usage ;;
   *)
-    echo "agent: unknown command: $1" >&2
+    echo "${C_ERR}agent:${C_OFF} unknown command: $1" >&2
     usage >&2
     exit 2
     ;;

@@ -19,4 +19,22 @@ for workflow in "$PROJECT_DIR"/.github/workflows/*.yml; do
   done <"$workflow"
 done
 
+# Every runner in the harness pins PATH. AGENT_SYNC_HOME isolates the files
+# agent-sync writes itself, but `mcp sync` delegates to whichever vendor CLI
+# is on PATH, and a real claude or codex writes to the developer's own
+# configuration rather than the fixture -- which is how a probe server once
+# ended up registered in a live ~/.claude.json.
+runners=$(grep -c '^run_agent[a-z_]*() {' "$PROJECT_DIR/tests/lib.sh")
+[ "$runners" -ge 4 ] ||
+  fail "harness runners were renamed; the PATH-pinning check now proves nothing"
+awk '
+  /^run_agent[a-z_]*\(\) \{/ { fn = $1; expect = 1; next }
+  expect == 1 {
+    if ($0 !~ /^[[:space:]]*PATH=/) { print fn }
+    expect = 0
+  }
+' "$PROJECT_DIR/tests/lib.sh" >"$TEST_ROOT/unpinned-runners"
+[ ! -s "$TEST_ROOT/unpinned-runners" ] ||
+  fail "harness runner does not pin PATH first: $(tr '\n' ' ' <"$TEST_ROOT/unpinned-runners")"
+
 echo 'workflow policy tests passed'
