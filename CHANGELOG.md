@@ -16,10 +16,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - The weekly compatibility job covers every CLI grammar `agent mcp` depends
-  on. Qwen Code and Amp were named in the contract but never checked;
-  `docs/compatibility.md` now tabulates exactly what is depended on per CLI
-  and why the file-written and snippet-only tools have no grammar
-  dependency at all.
+  on. Qwen Code and Amp were named in the contract but never checked, and
+  the checked CLIs asserted one representative flag rather than all of
+  them. Every flag and subcommand agent-sync passes is now asserted
+  individually, and a package that cannot be installed after three attempts
+  fails the job rather than being skipped, since a renamed or withdrawn
+  package is itself a compatibility break.
+- `release-guard` now requires both release assets, verifies the published
+  binary's build-provenance attestation, and checks `SHA256SUMS` against
+  the binary it ships with. Asset presence alone said nothing about where
+  the binary came from.
 
 ## [1.5.4] - 2026-08-17
 

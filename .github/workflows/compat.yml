@@ -1,9 +1,15 @@
 name: compat
 
 # agent mcp drives other vendors' CLIs by their documented flag grammar.
-# That grammar is a contract we do not control, so check weekly that it
-# still exists rather than discovering a break through a user's broken
-# config. Only --help is exercised: no account, no network mutations.
+# That grammar is a contract we do not control, so check weekly that every
+# flag agent-sync actually passes still exists, rather than discovering a
+# break through a user's broken configuration. Only --help is exercised: no
+# account, no network mutations.
+#
+# Each assertion is "help arguments :: token", derived from the invocations
+# in mcp_push_cli and mcp_remove_cli. A package that cannot be installed is
+# a failure, not a skip: a renamed or withdrawn package is itself a
+# compatibility break.
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -21,46 +27,75 @@ jobs:
         include:
           - tool: claude
             package: '@anthropic-ai/claude-code'
-            help: 'mcp add-json --help'
-            expect: '--scope'
+            assertions: |
+              mcp add-json --help :: --scope
+              mcp remove --help :: --scope
           - tool: codex
             package: '@openai/codex'
-            help: 'mcp add --help'
-            expect: '--url'
+            assertions: |
+              mcp add --help :: --url
+              mcp add --help :: --env
+              mcp remove --help :: mcp remove
           - tool: gemini
             package: '@google/gemini-cli'
-            help: 'mcp add --help'
-            expect: '--transport'
+            assertions: |
+              mcp add --help :: --transport
+              mcp add --help :: --header
+              mcp add --help :: -s
+              mcp add --help :: -e
+              mcp remove --help :: -s
           - tool: qwen
             package: '@qwen-code/qwen-code'
-            help: 'mcp add --help'
-            expect: '--transport'
+            assertions: |
+              mcp add --help :: --transport
+              mcp add --help :: --header
+              mcp add --help :: -s
+              mcp add --help :: -e
+              mcp remove --help :: -s
           # Amp takes no flags in the calls agent-sync makes, so the
-          # contract is that the add subcommand still exists.
+          # contract is that both subcommands still exist.
           - tool: amp
             package: '@sourcegraph/amp'
-            help: 'mcp --help'
-            expect: 'add'
+            assertions: |
+              mcp --help :: add
+              mcp --help :: remove
     steps:
       - name: install ${{ matrix.tool }}
-        id: install
-        continue-on-error: true
-        run: npm install -g ${{ matrix.package }}
-      # A failed install is infrastructure noise, not a contract break, so
-      # it reports and stops instead of failing the run.
-      - name: skip when the CLI could not be installed
-        if: steps.install.outcome == 'failure'
         run: |
-          echo "::warning::could not install ${{ matrix.package }}; skipping"
-          exit 0
-      - name: the flags agent-sync passes must still exist
-        if: steps.install.outcome == 'success'
+          # Retry for transient registry failures. Exhausting the retries
+          # means the package is gone or renamed, which is a real finding.
+          for attempt in 1 2 3; do
+            if npm install -g ${{ matrix.package }}; then
+              exit 0
+            fi
+            echo "install attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::${{ matrix.package }} could not be installed after" \
+            "3 attempts. If it was renamed or withdrawn, agent-sync's" \
+            "support for ${{ matrix.tool }} needs updating." >&2
+          exit 1
+      - name: every flag agent-sync passes must still exist
+        env:
+          TOOL: ${{ matrix.tool }}
+          ASSERTIONS: ${{ matrix.assertions }}
         run: |
-          OUT=$(${{ matrix.tool }} ${{ matrix.help }} 2>&1 || true)
-          printf '%s\n' "$OUT"
-          if ! printf '%s' "$OUT" | grep -q -- '${{ matrix.expect }}'; then
-            echo "::error::${{ matrix.tool }} no longer documents" \
-              "'${{ matrix.expect }}' in '${{ matrix.help }}';" \
-              "agent mcp sync may be broken against it" >&2
-            exit 1
-          fi
+          printf '%s\n' "$ASSERTIONS" >/tmp/assertions
+          failures=0
+          # Redirect rather than pipe: a piped while runs in a subshell and
+          # would discard the counter.
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            args=$(printf '%s' "${line%%::*}" | sed 's/[[:space:]]*$//')
+            token=$(printf '%s' "${line#*::}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            # shellcheck disable=SC2086
+            out=$("$TOOL" $args 2>&1 || true)
+            if printf '%s' "$out" | grep -qF -- "$token"; then
+              echo "ok: $TOOL $args documents '$token'"
+            else
+              echo "::error::$TOOL $args no longer documents '$token';" \
+                "agent mcp sync may be broken against it" >&2
+              failures=$((failures + 1))
+            fi
+          done </tmp/assertions
+          [ "$failures" -eq 0 ] || exit 1

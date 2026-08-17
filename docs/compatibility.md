@@ -33,13 +33,20 @@ workflow installs each CLI and asserts the grammar agent-sync depends on
 still exists in its help output, so a break surfaces as a failed scheduled
 run rather than a user's broken configuration.
 
-| CLI | What agent-sync depends on | Checked weekly |
-| --- | --- | --- |
-| Claude Code | `mcp add-json --scope` | Yes |
-| Codex | `mcp add --url`, `--env` | Yes |
-| Gemini CLI | `mcp add --transport`, `-s`, `-e` | Yes |
-| Qwen Code | Same grammar as Gemini CLI | Yes |
-| Amp | `mcp add` with positional arguments only | Yes, that the subcommand exists |
+Every flag in this table is asserted by the weekly job, not a
+representative sample of them:
+
+| CLI | Flags and subcommands agent-sync passes |
+| --- | --- |
+| Claude Code | `mcp add-json --scope`, `mcp remove --scope` |
+| Codex | `mcp add --url`, `mcp add --env`, `mcp remove` |
+| Gemini CLI | `mcp add -s -e --transport --header`, `mcp remove -s` |
+| Qwen Code | Same grammar as Gemini CLI, asserted separately |
+| Amp | `mcp add` and `mcp remove` subcommands, positional arguments only |
+
+A CLI that cannot be installed fails the job after three attempts rather
+than being skipped: a renamed or withdrawn package is itself a
+compatibility break.
 
 Cursor, Windsurf and Kiro have no MCP add command, so agent-sync writes
 their config files directly; those are path dependencies, not grammar ones.
