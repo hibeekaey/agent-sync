@@ -21,8 +21,14 @@ _agent() {
     'help:show usage'
     'version:print the version'
   )
+  local -a color_opts
+  color_opts=(
+    '--color=-[colourise status output]::when:(auto always never)'
+    '--no-color[disable colourised status output]'
+  )
   if ((CURRENT == 2)); then
     _describe 'command' commands
+    _arguments $color_opts
     return
   fi
   case "$words[2]" in
@@ -33,7 +39,8 @@ _agent() {
       _files -/
       ;;
     link)
-      _arguments '--import[fold native project configs into AGENTS.md]' \
+      _arguments $color_opts \
+        '--import[fold native project configs into AGENTS.md]' \
         '1:directory:_files -/'
       ;;
     pack)
@@ -49,13 +56,15 @@ _agent() {
       _values 'tool' claude codex gemini opencode
       ;;
     sync)
-      _arguments '--dry-run[print actions without writing]' \
+      _arguments $color_opts \
+        '--dry-run[print actions without writing]' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]'
       ;;
     apply)
-      _arguments '--dry-run[print actions without writing]' \
+      _arguments $color_opts \
+        '--dry-run[print actions without writing]' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]' \

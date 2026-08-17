@@ -3,6 +3,11 @@
 Every command, with real output. Paths and content are from a demo setup,
 so substitute your own.
 
+Output here is shown plain, which is what a pipe or a redirect gets. On a
+terminal the same lines are coloured: `synced` green, `STALE` bold yellow,
+paths cyan, synthesis magenta, failures red. `--no-color` turns that off and
+`--color=always` keeps it through a pipe or a pager.
+
 The examples assume three agents installed and a memory file at
 `~/.claude/CLAUDE.md` reading:
 

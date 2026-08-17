@@ -21,6 +21,8 @@ agent - synchronize agent memory across AI coding agents
 *agent* skills sync++
 *agent* hooks [TOOL]
 
+Every command also accepts *--color*[=_WHEN_] and *--no-color*.
+
 # DESCRIPTION
 
 agent keeps every AI coding agent on a machine reading the same synthesized
@@ -106,7 +108,26 @@ installed agent's global instructions slot.
 	SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
 	cron fallback. Printed, never installed.
 
+# OPTIONS
+
+*--color*[=_WHEN_], *--no-color*
+	Colour status output. _WHEN_ is *auto* (the default: colour only when
+	standard output is a terminal), *always* or *never*; a bare *--color*
+	means *always*. The flag is global and may appear anywhere before a
+	literal *--*, past which the remaining words belong to the program
+	being registered by *mcp add*. Colour is additive: escapes are never
+	written to a file, and text, exit codes and piped bytes are identical
+	either way.
+
 # ENVIRONMENT
+
+*NO_COLOR*
+	Set to any non-empty value to disable colour (see https://no-color.org).
+
+*FORCE_COLOR*, *CLICOLOR_FORCE*
+	Set to any non-empty value other than 0 to keep colour on when
+	standard output is not a terminal. Both override *NO_COLOR*; an
+	explicit *--color* or *--no-color* overrides all three.
 
 *AGENT_SYNC_SOURCE*
 	Location of the synthesized memory file

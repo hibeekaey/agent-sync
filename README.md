@@ -278,6 +278,7 @@ Beyond memory, `agent` syncs the rest of your agent setup:
 | Privacy | Memory files and MCP credentials can contain private context. Keep the synthesized file, gathered output, MCP state and snippets out of public repositories; deterministic synthesis keeps memory out of model calls. |
 | Synthesized source | `AGENT_SYNC_SOURCE` overrides its location. When it lives elsewhere, sync redistributes it to Claude too. |
 | Test isolation | `AGENT_SYNC_HOME` points the tool at a fixture root; `make test` never touches your real config. |
+| Colour | Status output is coloured on a terminal and plain everywhere else, so pipes, cron and CI keep the exact bytes they had. `--no-color` or `NO_COLOR` turns it off; `--color=always` or `FORCE_COLOR` keeps it through a pipe or a pager. Escapes never reach a file. |
 | Walkthrough | Every command with real output: [docs/walkthrough.md](docs/walkthrough.md). |
 | Manual | `man agent` after `make install`, or `agent help`. |
 | Compatibility | Supported platforms, what agent-sync depends on in each tool, versioning and the deprecation policy: [docs/compatibility.md](docs/compatibility.md). |
