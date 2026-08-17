@@ -65,6 +65,9 @@ The edit loop: `agent gather`, edit the staged files in one place, `agent
 apply`. Your edits land back in each agent's own store, get folded into the
 synthesized file, and are redistributed to every agent.
 
+Every command with real output, end to end:
+[docs/walkthrough.md](docs/walkthrough.md).
+
 **Safety:** the first time sync would overwrite a pre-existing file it did
 not write, the original is preserved beside it as `<file>.orig`, and `agent
 revert` restores everything. `apply` validates every manifest entry against
@@ -273,6 +276,7 @@ Beyond memory, `agent` syncs the rest of your agent setup:
 | Privacy | Memory files and MCP credentials can contain private context. Keep the synthesized file, gathered output, MCP state and snippets out of public repositories; deterministic synthesis keeps memory out of model calls. |
 | Synthesized source | `AGENT_SYNC_SOURCE` overrides its location. When it lives elsewhere, sync redistributes it to Claude too. |
 | Test isolation | `AGENT_SYNC_HOME` points the tool at a fixture root; `make test` never touches your real config. |
+| Walkthrough | Every command with real output: [docs/walkthrough.md](docs/walkthrough.md). |
 | Manual | `man agent` after `make install`, or `agent help`. |
 | Compatibility | Supported platforms, what agent-sync depends on in each tool, versioning and the deprecation policy: [docs/compatibility.md](docs/compatibility.md). |
 

@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.5.5"
+VERSION="1.5.6"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -1897,15 +1897,27 @@ cmd_skills() {
     echo "skills: refusing symbolic-link ownership file: $SKILLS_OWNED" >&2
     exit 1
   fi
+  # Decide eligibility once, so the per-target loop below cannot disagree
+  # with this check.
+  ensure_private_tmp
+  eligible="$PRIVATE_TMP/skills-eligible"
+  : >"$eligible"
   count=0
+  linked=0
   for skill in "$SKILLS_SOURCE"/*/; do
     [ -f "$skill/SKILL.md" ] || continue
     skill_path=${skill%/}
+    # A symlinked source skill could resolve anywhere, so it is never
+    # copied. Skipping it must not block the others: plugin-installed
+    # skills are routinely symlinks into a shared skills directory, and
+    # failing the whole run made the command unusable wherever one existed.
     if [ -L "$skill_path" ] || [ -L "$skill/SKILL.md" ] ||
       [ -n "$(find "$skill_path" -type l -print -quit)" ]; then
-      echo "skills: refusing symbolic links in source skill: $skill_path" >&2
-      exit 1
+      echo "skills: skipping $(basename "$skill_path") (symbolic link in source)"
+      linked=$((linked + 1))
+      continue
     fi
+    printf '%s\n' "$skill_path" >>"$eligible"
     count=$((count + 1))
   done
   if [ "$count" -eq 0 ]; then
@@ -1942,20 +1954,24 @@ cmd_skills() {
         ;;
     esac
     synced=0
-    for skill in "$SKILLS_SOURCE"/*/; do
-      [ -f "$skill/SKILL.md" ] || continue
-      sname=$(basename "$skill")
-      if skill_sync_one "$skill" "${dest_phys:?}/$sname"; then
+    while IFS= read -r skill_path; do
+      [ -n "$skill_path" ] || continue
+      sname=$(basename "$skill_path")
+      if skill_sync_one "$skill_path" "${dest_phys:?}/$sname"; then
         synced=$((synced + 1))
       else
         skill_failures=$((skill_failures + 1))
       fi
-    done
+    done <"$eligible"
     echo "$name: $synced skill(s) -> $dest"
   done <<EOF
 $(skills_targets)
 EOF
-  echo "source: $SKILLS_SOURCE ($count skill(s))"
+  if [ "$linked" -gt 0 ]; then
+    echo "source: $SKILLS_SOURCE ($count skill(s); $linked skipped as symbolic links)"
+  else
+    echo "source: $SKILLS_SOURCE ($count skill(s))"
+  fi
   [ "$skill_failures" -eq 0 ] || return 1
 }
 

@@ -48,20 +48,28 @@ assert_contains "$TEST_ROOT/skills-owned-victim" "$AGENT_CONFIG_ROOT/.codex/skil
 rm "$PACK_STATE/skills-owned"
 mv "$PACK_STATE/skills-owned.saved" "$PACK_STATE/skills-owned"
 
+# A symlinked source skill is never copied, but it must not block the
+# others: plugin-installed skills are routinely symlinks into a shared
+# skills directory, and failing the whole run made the command unusable.
 mkdir -p "$TEST_ROOT/outside-skill"
 printf -- '---\nname: linked-skill\n---\nprivate\n' >"$TEST_ROOT/outside-skill/SKILL.md"
 ln -s "$TEST_ROOT/outside-skill" "$AGENT_CONFIG_ROOT/.claude/skills/linked-skill"
-if (
+mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/plain-skill"
+printf -- '---\nname: plain-skill\n---\nreal\n' >"$AGENT_CONFIG_ROOT/.claude/skills/plain-skill/SKILL.md"
+(
   AGENT_SYNC_ONLY=codex
   export AGENT_SYNC_ONLY
   run_agent skills sync
-) >"$TEST_ROOT/skills-source-symlink.out" 2>&1; then
-  fail 'skills sync accepted a symbolic-link source skill'
-fi
+) >"$TEST_ROOT/skills-source-symlink.out" 2>&1 ||
+  fail 'a symbolic-link source skill blocked the whole run'
 [ ! -e "$AGENT_CONFIG_ROOT/.codex/skills/linked-skill" ] ||
   fail 'skills sync propagated a symbolic-link source skill'
-assert_contains "$TEST_ROOT/skills-source-symlink.out" 'refusing symbolic links in source skill'
+assert_contains "$TEST_ROOT/skills-source-symlink.out" 'skipping linked-skill (symbolic link in source)'
+assert_contains "$TEST_ROOT/skills-source-symlink.out" '1 skipped as symbolic links'
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/plain-skill/SKILL.md" 'real'
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/test-skill/SKILL.md" 'name: test-skill'
 rm "$AGENT_CONFIG_ROOT/.claude/skills/linked-skill"
+rm -rf "$AGENT_CONFIG_ROOT/.claude/skills/plain-skill"
 
 # skills sync must never delete canonical skills through a symlinked target.
 rm -rf "$AGENT_CONFIG_ROOT/.qwen/skills"
