@@ -1,13 +1,13 @@
 name: release
 
-# Draft-first. Saving a draft release verifies, attests and attaches the
-# assets; publishing that draft bumps the formula and smoke tests what was
-# actually published. Assets must exist before publication so a release can
-# be immutable, and keying on tag pushes instead would silently skip a
-# release published against a tag that already exists.
+# Publishing a release from the GitHub Releases page is the trigger, whether
+# it was saved as a draft first or published directly. Keying on tag pushes
+# would silently skip a release published against an existing tag, and
+# GitHub does not run workflows for the `created` activity type on drafts,
+# so a draft save cannot be the trigger either.
 on:
   release:
-    types: [created, published]
+    types: [published]
 
 permissions:
   contents: read
@@ -16,7 +16,6 @@ jobs:
   # A release can be cut from a commit that bypassed the pull-request
   # checks, so the suite runs again here instead of being assumed.
   verify:
-    if: github.event.action == 'created'
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -24,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.release.target_commitish }}
+          ref: ${{ github.event.release.tag_name }}
       - name: shellcheck
         if: runner.os == 'Linux'
         run: shellcheck bin/agent
@@ -32,7 +31,6 @@ jobs:
         run: make test
 
   assets:
-    if: github.event.action == 'created'
     needs: verify
     permissions:
       contents: write
@@ -43,16 +41,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name }}
     steps:
-      # A draft release has no tag yet, so build from what it targets.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.release.target_commitish }}
-      - name: draft-first reminder
-        if: github.event.release.draft == false
-        run: |
-          echo "::warning::Published without a draft. Once immutable releases" \
-            "are enabled, attaching assets to an already published release" \
-            "fails; save the release as a draft first."
+          ref: ${{ github.event.release.tag_name }}
       - name: the released binary must declare the released version
         run: |
           DECLARED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/agent)
@@ -77,7 +68,7 @@ jobs:
         run: gh release upload "$TAG" agent SHA256SUMS --clobber
 
   tap:
-    if: github.event.action == 'published'
+    needs: assets
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name }}
@@ -107,7 +98,6 @@ jobs:
   # Prove the published artifacts install, rather than trusting that they
   # were uploaded.
   smoke:
-    if: github.event.action == 'published'
     needs: tap
     strategy:
       matrix:
