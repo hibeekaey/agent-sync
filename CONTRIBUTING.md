@@ -47,27 +47,41 @@ AGENT_SYNC_HOME=/tmp/scratch-agents \
 ## Releases
 
 Every change lands through a pull request; the required checks are the
-behavioral suite on ubuntu and macos plus skill validation. To release,
-bump `VERSION` in `bin/agent` and add a `CHANGELOG.md` entry in that pull
-request, then publish a release on the GitHub Releases page with the
-matching `vX.Y.Z` tag. Saving it as a draft first is fine; the automation
-runs on publication either way.
+behavioral suite on ubuntu and macos plus skill validation.
 
-Publishing reruns the suite and ShellCheck (a release can be cut from a
-commit that bypassed the pull-request checks), verifies the binary declares
-the released version, validates the bundled skill, attaches `agent` and
-`SHA256SUMS` with a signed build-provenance attestation, bumps the Homebrew
-formula, then smoke tests the published artifacts: the checksum-verifying
-installer on ubuntu and macos, `gh attestation verify`, and a Homebrew
-install from the tap. Nothing is published by hand.
+**Merging the version bump is the release.** To ship one, put two things in
+the pull request: a new `VERSION` in `bin/agent`, and a matching
+`CHANGELOG.md` entry. Nothing else. On merge, the release workflow compares
+`VERSION` against the current release and, when it differs, cuts the
+release itself.
 
-GitHub's immutable releases are **not** enabled, and cannot be while
-releases are published by hand. Immutability requires every asset to exist
-before publication, but GitHub does not run workflows when a draft is
-saved (only `published` fires for drafts), so assets can only be attached
-after the release goes public. Enabling immutability would mean giving up
-the Releases-page ritual in favour of a `workflow_dispatch` release that
-creates the draft, uploads, and publishes in one automated run.
+That means no tag to push and no button to click. A merge that does not
+change `VERSION` releases nothing, so ordinary changes need no thought at
+all.
+
+What the workflow does, in order: reruns the suite and ShellCheck (a
+release can be cut from a commit that bypassed the pull-request checks),
+composes the notes, creates a **draft**, validates the bundled skill,
+attaches `agent` and `SHA256SUMS` with a signed build-provenance
+attestation, publishes the draft, bumps the Homebrew formula, then smoke
+tests what shipped: the checksum-verifying installer on ubuntu and macos,
+`gh attestation verify`, and a Homebrew install from the tap.
+
+Release notes are the `CHANGELOG.md` section for that version, always
+followed by the commit log, diffstat and compare link since the previous
+release. Without a changelog entry the commit log stands alone, so a
+release is never noteless.
+
+Two refusals worth knowing: a `VERSION` that is not newer than the current
+release fails rather than tagging history backwards, and a version already
+released is a no-op rather than an error.
+
+Do not create releases by hand. Assets must be attached before publication,
+because GitHub's immutable releases freeze a release's tag and assets the
+moment it goes public. A hand-published release ships with no binary, no
+checksums and no attestation and cannot be repaired in place; the
+`release-guard` workflow fails loudly when it happens, and the fix is to
+delete that release and let the workflow redo it.
 
 The bundled skill rides the same release tags: `gh skill install` resolves
 `--pin vX.Y.Z` against them directly, so the skill needs no release of its

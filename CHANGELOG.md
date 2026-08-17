@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.4] - 2026-08-17
+
+### Changed
+
+| Area | Change |
+| --- | --- |
+| Releases | Merging the version bump is the release. Every push to main compares `VERSION` in `bin/agent` against the current release and cuts a new one when it changes, so there is no tag to push and no button to click. |
+| Release notes | Taken from the matching `CHANGELOG.md` section, always followed by the commit log, diffstat and compare link since the previous release. A missing changelog entry falls back to the commit log alone. |
+| Release integrity | The release is assembled as a draft and published only once its attested assets are attached, which is the precondition for GitHub's immutable releases. |
+| Release safety | A new `release-guard` workflow fails when a release is published without its assets, which is what happens if a release is created by hand. |
+| Tests | The behavioral suite is split by surface into `tests/*_test.sh` over a shared `tests/lib.sh`, each with its own isolated fixture, so a single suite can run alone. |
+
+### Added
+
+- `docs/compatibility.md`: supported platforms, what agent-sync depends on
+  in each tool and how each dependency fails, agent version support,
+  semantic-versioning scope, stable on-disk state formats, and the
+  deprecation policy for removing a target.
+
 ## [1.5.3] - 2026-08-17
 
 ### Changed

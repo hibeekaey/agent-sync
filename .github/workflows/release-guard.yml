@@ -1,0 +1,35 @@
+name: release-guard
+
+# Publishing a release by hand skips the release workflow, so it ships with
+# no binary, no checksums, no attestation and no formula bump. With
+# immutable releases enabled that cannot be repaired in place, so say so
+# loudly at publication rather than letting the release sit broken.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  assets-present:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: a published release must carry its assets
+        run: |
+          NAMES=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '[.assets[].name] | join(",")')
+          echo "assets: ${NAMES:-none}"
+          case ",$NAMES," in
+            *,agent,*) ;;
+            *)
+              echo "::error::$TAG was published without the release assets." \
+                "Publish releases by running the release workflow, which" \
+                "attaches them to the draft first. Delete this release and" \
+                "re-run it." >&2
+              exit 1
+              ;;
+          esac
