@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.6.0"
+VERSION="1.6.1"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -512,6 +512,28 @@ valid_synth_output() {
   [ -s "$1" ] && head -1 "$1" | grep -q '^#'
 }
 
+# A synthesizer sometimes opens with a line of chat before the document.
+# Dropping that line beats throwing away an otherwise correct merge of a
+# 60 KB file, but only inside a short window: prose running longer than this
+# means the model answered something other than "rewrite this document", and
+# the deterministic merge already in place is the better answer.
+SYNTH_PREAMBLE_MAX=10
+
+strip_synth_preamble() {
+  sp_out="$1"
+  if head -1 "$sp_out" | grep -q '^#'; then
+    return 0
+  fi
+  sp_at=$(awk -v max="$SYNTH_PREAMBLE_MAX" '
+    NR > max { exit }
+    /^#/ { print NR; exit }
+  ' "$sp_out")
+  [ -n "$sp_at" ] || return 0
+  ensure_private_tmp
+  tail -n +"$sp_at" "$sp_out" >"$PRIVATE_TMP/synth-trimmed"
+  cp "$PRIVATE_TMP/synth-trimmed" "$sp_out"
+}
+
 try_synthesizer() {
   kind="$1"
   prompt="$2"
@@ -533,7 +555,9 @@ try_synthesizer() {
         run_status=$?
       ;;
   esac
-  [ "$run_status" -eq 0 ] && valid_synth_output "$out"
+  [ "$run_status" -eq 0 ] || return 1
+  strip_synth_preamble "$out"
+  valid_synth_output "$out"
 }
 
 accept_synth_output() {

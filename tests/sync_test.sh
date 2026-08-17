@@ -209,4 +209,26 @@ assert_contains "$CANON" '# Synthesized memory'
   fail 'agent left temporary files behind'
 assert_not_contains "$AGENT_BIN" '.tmp.$$'
 
+# A synthesizer that prefaces the document with a line of chat still counts:
+# the preamble is dropped, the document is kept. Rejecting it would discard a
+# correct merge over one sentence.
+PREAMBLE_SYNTH='printf "Here is the merged document:\n\n# Preambled memory\nbody\n"'
+PATH="$SAFE_PATH" TMPDIR="$TEST_TMPDIR" AGENT_SYNC_ACTIVE=0 \
+  AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" AGENT_SYNC_SOURCE="$CANON" \
+  AGENT_SYNC_SYNTHESIZER="$PREAMBLE_SYNTH" "$AGENT_BIN" sync >/dev/null
+[ "$(head -1 "$CANON")" = '# Preambled memory' ] ||
+  fail "preamble was not stripped; canon starts: $(head -1 "$CANON")"
+assert_not_contains "$CANON" 'Here is the merged document'
+
+# Prose running past the window is a refusal, not a document. The canon keeps
+# the deterministic merge rather than being replaced by the model's chat.
+cp "$CANON" "$TEST_ROOT/before-refusal.md"
+# shellcheck disable=SC2016  # the synthesizer body must reach sh -c unexpanded
+LONG_REFUSAL='i=0; while [ $i -lt 14 ]; do echo "I cannot do that."; i=$((i+1)); done; echo "# Too late"'
+PATH="$SAFE_PATH" TMPDIR="$TEST_TMPDIR" AGENT_SYNC_ACTIVE=0 \
+  AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" AGENT_SYNC_SOURCE="$CANON" \
+  AGENT_SYNC_SYNTHESIZER="$LONG_REFUSAL" "$AGENT_BIN" sync >/dev/null 2>&1
+assert_not_contains "$CANON" '# Too late'
+assert_not_contains "$CANON" 'I cannot do that.'
+
 echo 'sync tests passed'
