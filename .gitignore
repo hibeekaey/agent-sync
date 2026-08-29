@@ -18,5 +18,3 @@ agent-memories/
 *.log
 tmp/
 
-# local showcase-video Remotion project (video deliverable, not site code)
-showcase-video/
