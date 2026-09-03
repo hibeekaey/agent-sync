@@ -30,6 +30,7 @@ fi
 case "$mode" in
   badhead) first="# Something else" ;;
   tiny) printf '%s\n' "$first"; exit 0 ;;
+  same) printf '%s\n' "$first"; printf '%s\n' "$rest"; exit 0 ;;
 esac
 printf '%s\n' "$first"
 told=0
@@ -249,6 +250,14 @@ fi
 assert_contains "$TEST_ROOT/tiny.out" 'below the 25% floor'
 assert_contains "$TEST_ROOT/tiny.out" 'below the 8% floor'
 cmp -s "$CANON" "$TEST_ROOT/canon.before" || fail 'a refusal-sized rewrite changed the canon'
+
+# A rewrite that is not smaller is churn, not compaction: the section is kept.
+write_fixture
+if run_compact same --budget 2800 >"$TEST_ROOT/same.out" 2>&1; then
+  fail 'compact exited 0 with rewrites no smaller than the originals'
+fi
+assert_contains "$TEST_ROOT/same.out" 'no smaller than the original'
+assert_contains "$TEST_ROOT/same.out" '## Rules: 3507 -> kept'
 
 # A failing model keeps everything.
 write_fixture

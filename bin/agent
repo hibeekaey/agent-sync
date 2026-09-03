@@ -940,6 +940,10 @@ compact_rewrite() {
       echo "the rewrite dropped: $(printf '%s' "$cr_missing" | tr '\n' ' ')" >&2
       return 1
     fi
+    if [ "$cr_bytes" -ge "$cr_in" ]; then
+      echo "the rewrite is $cr_bytes bytes, no smaller than the original" >&2
+      return 1
+    fi
     if [ $((cr_bytes * 100)) -le $((cr_target * COMPACT_OVERSHOOT_PERCENT)) ]; then
       return 0
     fi
