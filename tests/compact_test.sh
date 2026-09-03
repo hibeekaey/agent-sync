@@ -32,11 +32,14 @@ case "$mode" in
   tiny) printf '%s\n' "$first"; exit 0 ;;
 esac
 printf '%s\n' "$first"
-printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v n="$(printf '%s\n' "$first" | wc -c)" '
+told=0
+printf '%s\n' "$prompt" | grep -q 'previous attempt dropped the following' && told=1
+printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v told="$told" -v n="$(printf '%s\n' "$first" | wc -c)" '
   /^---$/ { fm = !fm; next }
   fm { next }
   /^### / { next }
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
+  mode == "learn" && !told && /G-Z3LXJSB0MB/ { next }
   mode == "hex" && /0E0E0E/ { next }
   mode == "prose" && /146-account/ { next }
   mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
@@ -218,6 +221,16 @@ assert_contains "$CANON" '0E0E0E'
 assert_contains "$CANON" 'G-Z3LXJSB0MB'
 assert_contains "$CANON" 'explains at length why the rule exists'
 assert_contains "$CANON" '## Promoted from claude'
+
+# A rewrite that drops identifiers gets one more attempt that names them; a
+# model that restores them on that attempt is accepted, and the run shows the
+# section called twice.
+write_fixture
+: >"$SYNTH_LOG"
+run_compact learn --budget 2800 >"$TEST_ROOT/learn.out" 2>&1 || fail "compact refused a rewrite that restored what it was told it dropped: $(cat "$TEST_ROOT/learn.out")"
+assert_not_contains "$TEST_ROOT/learn.out" 'kept'
+assert_contains "$CANON" 'G-Z3LXJSB0MB'
+[ "$(grep -c 'call learn' "$SYNTH_LOG")" -eq 4 ] || fail "expected 4 model calls (Rules twice, Colours, import), saw $(grep -c 'call learn' "$SYNTH_LOG")"
 
 # Falsify the heading guard.
 write_fixture

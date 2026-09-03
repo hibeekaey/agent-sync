@@ -21,7 +21,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   at least a quarter of the original, and still contains every backtick
   span, URL and letter-and-digit token the original had. The command exits at
   once while the file is within budget, so it is cheap to schedule, and it
-  rejects `--synthesizer deterministic` because a merge cannot summarize.
+  rejects `--synthesizer deterministic` because a merge cannot summarize. A
+  rewrite that drops identifiers gets one more attempt that names exactly what
+  it lost; a second drop keeps the section as it was.
 - `sync` reports the file's size against the budget after every run;
   `status` and `doctor` fail while it is over budget.
 - The whole-document semantic synthesis is now held to the same identifier

@@ -846,6 +846,11 @@ EOF
     echo
     echo "Your previous attempt was $4 bytes, which is too long. It must be at most $3 bytes."
   fi
+  if [ -n "$5" ]; then
+    echo
+    echo "Your previous attempt dropped the following, each of which must appear verbatim in the rewrite:"
+    printf '%s\n' "$5" | sed 's/^/- /'
+  fi
   echo
   echo '--- SECTION ---'
   cat "$1"
@@ -873,6 +878,11 @@ EOF
     echo
     echo "Your previous attempt was $6 bytes, which is too long. It must be at most $3 bytes."
   fi
+  if [ -n "$7" ]; then
+    echo
+    echo "Your previous attempt dropped the following, each of which must appear verbatim in the rewrite:"
+    printf '%s\n' "$7" | sed 's/^/- /'
+  fi
   echo
   echo '--- SECTION ---'
   cat "$1"
@@ -890,13 +900,14 @@ compact_rewrite() {
   cr_in=$(file_bytes "$cr_chunk")
   cr_prompt="$PRIVATE_TMP/compact-prompt"
   cr_prev=""
+  cr_dropped=""
   cr_attempt=0
   while [ "$cr_attempt" -lt 2 ]; do
     cr_attempt=$((cr_attempt + 1))
     if [ "$cr_kind" = import ]; then
-      compact_import_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_from" "$cr_date" "$cr_prev" >"$cr_prompt"
+      compact_import_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_from" "$cr_date" "$cr_prev" "$cr_dropped" >"$cr_prompt"
     else
-      compact_section_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_prev" >"$cr_prompt"
+      compact_section_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_prev" "$cr_dropped" >"$cr_prompt"
     fi
     if ! invoke_synthesizer "$COMPACT_KIND" "$cr_prompt" "$cr_out"; then
       echo "the synthesizer failed" >&2
@@ -921,6 +932,11 @@ compact_rewrite() {
     fi
     cr_missing=$(missing_identifiers "$cr_ids" "$cr_out")
     if [ -n "$cr_missing" ]; then
+      # One more attempt, told exactly what it lost; a second drop is final.
+      if [ "$cr_attempt" -lt 2 ]; then
+        cr_dropped="$cr_missing"
+        continue
+      fi
       echo "the rewrite dropped: $(printf '%s' "$cr_missing" | tr '\n' ' ')" >&2
       return 1
     fi
