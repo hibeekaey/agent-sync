@@ -30,7 +30,7 @@ fi
 case "$mode" in
   badhead) first="# Something else" ;;
   tiny) printf '%s\n' "$first"; exit 0 ;;
-  same) printf '%s\n' "$first"; printf '%s\n' "$rest"; exit 0 ;;
+  same) printf '%s\n' "$first"; printf '%s\n' "$rest"; echo 'Nothing else was changed.'; exit 0 ;;
 esac
 printf '%s\n' "$first"
 told=0
@@ -257,7 +257,8 @@ if run_compact same --budget 2800 >"$TEST_ROOT/same.out" 2>&1; then
   fail 'compact exited 0 with rewrites no smaller than the originals'
 fi
 assert_contains "$TEST_ROOT/same.out" 'no smaller than the original'
-assert_contains "$TEST_ROOT/same.out" '## Rules: 3507 -> kept'
+grep -qE '^## Rules: [0-9]+ -> kept \(the rewrite is [0-9]+ bytes, no smaller' "$TEST_ROOT/same.out" ||
+  fail "Rules was not kept as unchanged: $(grep '^## Rules' "$TEST_ROOT/same.out")"
 
 # A failing model keeps everything.
 write_fixture
