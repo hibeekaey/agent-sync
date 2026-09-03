@@ -737,13 +737,34 @@ budget_report() {
 
 # Everything in a document an agent cannot re-derive: backtick spans, URLs,
 # and bare tokens that mix letters and digits (ids, versions, shas, keys).
+# Backticks are paired across the whole file, not per line, so a span broken
+# across two lines is one span and the prose between it and the next span is
+# not; each line of a multi-line span must survive on its own. A span carrying
+# an em dash is a pairing accident, not an identifier. A number glued to a
+# lowercase word (146-account, 429ing) is prose a rewrite may rephrase.
 extract_identifiers() {
   bt=$(printf '\140')
   {
-    grep -oE "${bt}[^${bt}]+${bt}" "$1" | sed "s/^${bt}//; s/${bt}\$//"
+    awk -v bt="$bt" '
+      { buf = buf $0 "\001" }
+      END {
+        # split() always breaks on newlines too, so they are masked first.
+        n = split(buf, seg, bt)
+        for (i = 2; i <= n; i += 2) {
+          m = split(seg[i], part, "\001")
+          for (j = 1; j <= m; j++) {
+            s = part[j]
+            gsub(/^[ \t]+/, "", s)
+            gsub(/[ \t]+$/, "", s)
+            if (length(s) > 0 && length(s) <= 200) print s
+          }
+        }
+      }
+    ' "$1" | grep -v ' — '
     grep -oE 'https?://[^] )>"`'"'"']+' "$1"
-    grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]'
-  } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | sort -u
+    grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]' |
+      grep -vE '^[0-9]+-?[a-z]+$'
+  } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | LC_ALL=C sort -u
 }
 
 # The text whose identifiers a rewrite must keep: the document minus the

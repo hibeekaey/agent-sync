@@ -37,6 +37,8 @@ printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v n="$(printf '%s\n'
   fm { next }
   /^### / { next }
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
+  mode == "prose" && /146-account/ { next }
+  mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
   /`|https?:\/\/|[0-9]/ { print; n += length($0) + 1; next }
   { keep[++k] = $0 }
   END { for (i = 1; i <= k; i++) { if (n + length(keep[i]) + 1 > t * 0.9) break; print keep[i]; n += length(keep[i]) + 1 } }'
@@ -83,7 +85,9 @@ write_fixture() {
       i=$((i + 1))
     done
     printf -- '- Analytics id %sG-Z3LXJSB0MB%s, docs https://example.com/docs/abc123 and sha de3e1c3 apply.\n' "$bt" "$bt"
-    printf -- '- The release ritual uses %snpm version patch%s.\n\n## Small\n\none line\n' "$bt" "$bt"
+    printf -- '- The release ritual uses %snpm version patch%s.\n' "$bt" "$bt"
+    printf -- '- Purchase stops at 2026-02-05 in the 146-account chart, and tests start 429ing themselves.\n'
+    printf -- '- All three carry %sReviewed commit:\n  <sha>%s — compare it to HEAD before trusting %sbadge/P<n>-%s counts.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt"
   } >"$CANON"
   mkdir -p "$(dirname "$CLAUDE_A")"
   {
@@ -169,6 +173,17 @@ run_agent sync >/dev/null
 cmp -s "$CANON" "$TEST_ROOT/canon.compacted" || fail 'the sync after compact re-imported the archived store'
 run_agent status >/dev/null || fail 'status failed after a successful compact'
 
+# Prose is not an identifier: a rewrite may rephrase "146-account", "429ing"
+# and the text between a broken span's closing backtick and the next opening
+# one, so dropping those lines is accepted, while badge/P<n>- must survive.
+write_fixture
+run_compact prose --budget 1500 >"$TEST_ROOT/prose.out" 2>&1 || fail "compact refused a rewrite over prose tokens: $(cat "$TEST_ROOT/prose.out")"
+assert_not_contains "$CANON" '146-account'
+assert_not_contains "$CANON" 'compare it to HEAD'
+assert_contains "$CANON" 'badge/P<n>-'
+assert_contains "$CANON" '<sha>'
+assert_not_contains "$TEST_ROOT/prose.out" 'kept'
+
 # Falsify the identifier guard: a rewrite that drops G-Z3LXJSB0MB is refused
 # and the section is kept verbatim, so the file stays over budget (exit 1).
 write_fixture
@@ -176,7 +191,8 @@ write_fixture
 if run_compact drop --budget 1500 >"$TEST_ROOT/drop.out" 2>&1; then
   fail 'compact exited 0 after keeping a section and staying over budget'
 fi
-assert_contains "$TEST_ROOT/drop.out" 'the rewrite dropped: G-Z3LXJSB0MB'
+assert_contains "$TEST_ROOT/drop.out" 'the rewrite dropped:'
+assert_contains "$TEST_ROOT/drop.out" 'G-Z3LXJSB0MB'
 assert_contains "$TEST_ROOT/drop.out" 'still'
 assert_contains "$CANON" 'G-Z3LXJSB0MB'
 assert_contains "$CANON" 'explains at length why the rule exists'
