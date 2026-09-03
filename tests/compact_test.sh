@@ -42,7 +42,7 @@ printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v told="$told" -v n=
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
   mode == "learn" && !told && /G-Z3LXJSB0MB/ { next }
   mode == "hex" && /0E0E0E/ { next }
-  mode == "forget" && /0E0E0E|Fixed in commit/ { next }
+  mode == "forget" && /0E0E0E|Fixed in commit|Learned the hard way/ { next }
   mode == "path" && /tokens.ts/ { next }
   mode == "prose" && /146-account/ { next }
   mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
@@ -102,7 +102,8 @@ write_fixture() {
     done
     printf -- '- The dark ladder runs from 0E0E0E to 262626 and lime is BFFF72.\n'
     printf -- '- Fixed in commit %sde3e1c3%s for PR #93 on 2026-08-30, released as %sv1.2.1%s.\n' "$bt" "$bt" "$bt" "$bt"
-    printf -- '- Tokens live in %ssrc/config/tokens.ts%s beside %sscripts/check-tokens.mjs%s.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt"
+    printf -- '- Tokens live in %ssrc/config/tokens.ts%s beside %sscripts/check-tokens.mjs%s.\n' "$bt" "$bt" "$bt" "$bt"
+    printf -- '- Learned the hard way: %scountryHintFrom%s once wrote raw %sNG%s and %sT1%s into the column.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt" "$bt" "$bt"
   } >"$CANON"
   mkdir -p "$(dirname "$CLAUDE_A")"
   {
@@ -218,6 +219,7 @@ write_fixture
 run_compact forget --budget 2800 >"$TEST_ROOT/forget.out" 2>&1 || fail "default mode refused a rewrite that only forgot one-off content: $(cat "$TEST_ROOT/forget.out")"
 assert_not_contains "$CANON" '0E0E0E'
 assert_not_contains "$CANON" 'Fixed in commit'
+assert_not_contains "$CANON" 'countryHintFrom'
 assert_contains "$CANON" 'src/config/tokens.ts'
 assert_contains "$TEST_ROOT/forget.out" '(mode: stable)'
 write_fixture
@@ -227,6 +229,13 @@ fi
 assert_contains "$TEST_ROOT/path.out" 'the rewrite dropped:'
 assert_contains "$TEST_ROOT/path.out" 'src/config/tokens.ts'
 assert_contains "$CANON" 'src/config/tokens.ts'
+
+write_fixture
+if run_compact forget --keep-all --budget 2800 >"$TEST_ROOT/forget-strict.out" 2>&1; then
+  fail 'compact --keep-all forgot a story that carried backtick code words'
+fi
+assert_contains "$TEST_ROOT/forget-strict.out" 'countryHintFrom'
+assert_contains "$CANON" 'countryHintFrom'
 
 # --keep-all: a section with no URL is guarded for bare tokens too. The URL
 # grep finds nothing there, and under set -e that once aborted the extractor

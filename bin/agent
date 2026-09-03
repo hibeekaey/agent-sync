@@ -165,9 +165,10 @@ Usage:
                          their stores) and rewrite oversized sections
                          shorter, one at a time. A rewrite may forget how a
                          lesson was learned, settled items and one-off
-                         references, but is refused if it drops a URL or a
-                         backtick span (paths, commands, ids); --keep-all
-                         forbids forgetting and also protects every bare
+                         references, but is refused if it drops a URL, a
+                         path, a hostname, a command, an environment
+                         variable or a long id; --keep-all forbids forgetting
+                         and protects every backtick span and bare
                          letter-and-digit token
   agent hooks [TOOL]     print verified automation snippets that keep memory
                          fresh (claude, codex, gemini, opencode, launchd)
@@ -714,10 +715,12 @@ COMPACT_OVERSHOOT_PERCENT=125  # accept a rewrite up to this far over target
 COMPACT_FORCE=0
 COMPACT_BUDGET=""
 # What a rewrite must keep. `stable` (the default) protects what an agent
-# cannot re-derive and must get exactly right: URLs and backtick spans, minus
-# one-off references (commit shas, PR and issue numbers, past versions, dates).
-# `strict` (--keep-all) also protects every bare token that mixes letters and
-# digits and forbids forgetting anything.
+# cannot re-derive and must get exactly right: URLs, and the backtick spans
+# that are paths, hostnames, commands, flags, environment variables or long
+# ids; a plain code word (a function name, a CSS class, a two-letter code) may
+# go with the story it sat in, as may one-off references (commit shas, PR and
+# issue numbers, past versions, dates). `strict` (--keep-all) protects every
+# backtick span and every bare letter-and-digit token, and forbids forgetting.
 COMPACT_MODE=stable
 
 compact_budget() {
@@ -784,9 +787,26 @@ extract_identifiers() {
     if [ "$ei_mode" = strict ]; then
       cat
     else
-      grep -vE '^[0-9a-f]{6,40}$|^#?[0-9]+$|^v?[0-9]+(\.[0-9]+)+([-.][A-Za-z0-9]+)*$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || true
+      stable_identifiers_only
     fi
   } | LC_ALL=C sort -u
+}
+
+# The stable subset: URLs; anything with a slash (paths, routes); a dotted
+# name ending in a short extension or TLD (files, hostnames); anything with a
+# space or starting with a dash (commands, flags); UPPER_SNAKE names of two or
+# more segments (environment variables); and ids of eight or more characters
+# mixing letters and digits. One-off references never count, whatever else
+# they match: commit shas, PR and issue numbers, version numbers, dates.
+stable_identifiers_only() {
+  grep -vE '^[0-9a-f]{6,40}$|^#?[0-9]+$|^v?[0-9]+(\.[0-9]+)+([-.][A-Za-z0-9]+)*$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$' |
+    awk '
+      /:\/\// || /\// { print; next }
+      /\.[A-Za-z][A-Za-z0-9]{1,4}$/ { print; next }
+      / / || /^-/ { print; next }
+      /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/ { print; next }
+      length($0) >= 8 && /[0-9]/ && /[A-Za-z]/ && /^[A-Za-z0-9._@:-]+$/ { print; next }
+    ' || true
 }
 
 # The text whose identifiers a rewrite must keep: the document minus the
