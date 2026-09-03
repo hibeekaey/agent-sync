@@ -741,7 +741,9 @@ budget_report() {
 # across two lines is one span and the prose between it and the next span is
 # not; each line of a multi-line span must survive on its own. A span carrying
 # an em dash is a pairing accident, not an identifier. A number glued to a
-# lowercase word (146-account, 429ing) is prose a rewrite may rephrase.
+# lowercase word (146-account, 429ing) is prose a rewrite may rephrase. Each
+# grep ends in `|| true`: the script runs under set -e, and a section with no
+# URL would otherwise abort the group before the bare tokens are read.
 extract_identifiers() {
   bt=$(printf '\140')
   {
@@ -760,10 +762,10 @@ extract_identifiers() {
           }
         }
       }
-    ' "$1" | grep -v ' — '
-    grep -oE 'https?://[^] )>"`'"'"']+' "$1"
+    ' "$1" | grep -v ' — ' || true
+    grep -oE 'https?://[^] )>"`'"'"']+' "$1" || true
     grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]' |
-      grep -vE '^[0-9]+-?[a-z]+$'
+      grep -vE '^[0-9]+-?[a-z]+$' || true
   } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | LC_ALL=C sort -u
 }
 

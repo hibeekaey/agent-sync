@@ -37,6 +37,7 @@ printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v n="$(printf '%s\n'
   fm { next }
   /^### / { next }
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
+  mode == "hex" && /0E0E0E/ { next }
   mode == "prose" && /146-account/ { next }
   mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
   /`|https?:\/\/|[0-9]/ { print; n += length($0) + 1; next }
@@ -87,7 +88,13 @@ write_fixture() {
     printf -- '- Analytics id %sG-Z3LXJSB0MB%s, docs https://example.com/docs/abc123 and sha de3e1c3 apply.\n' "$bt" "$bt"
     printf -- '- The release ritual uses %snpm version patch%s.\n' "$bt" "$bt"
     printf -- '- Purchase stops at 2026-02-05 in the 146-account chart, and tests start 429ing themselves.\n'
-    printf -- '- All three carry %sReviewed commit:\n  <sha>%s — compare it to HEAD before trusting %sbadge/P<n>-%s counts.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt"
+    printf -- '- All three carry %sReviewed commit:\n  <sha>%s — compare it to HEAD before trusting %sbadge/P<n>-%s counts.\n\n## Colours\n\n' "$bt" "$bt" "$bt" "$bt"
+    i=0
+    while [ "$i" -lt 30 ]; do
+      printf 'A section with no URL in it, so the URL grep finds nothing and must not abort the rest.\n'
+      i=$((i + 1))
+    done
+    printf -- '- The dark ladder runs from 0E0E0E to 262626 and lime is BFFF72.\n\n## Small\n\none line\n'
   } >"$CANON"
   mkdir -p "$(dirname "$CLAUDE_A")"
   {
@@ -137,7 +144,7 @@ assert_contains "$TEST_ROOT/badbudget.out" 'positive number of bytes'
 
 # Dry run: the plan, no model call, nothing written.
 : >"$SYNTH_LOG"
-run_compact good --budget 1500 --dry-run >"$TEST_ROOT/dry.out"
+run_compact good --budget 2800 --dry-run >"$TEST_ROOT/dry.out"
 assert_contains "$TEST_ROOT/dry.out" 'would rewrite "## Rules"'
 assert_contains "$TEST_ROOT/dry.out" 'would promote import:claude'
 assert_not_contains "$TEST_ROOT/dry.out" 'Small'
@@ -148,10 +155,10 @@ cmp -s "$CANON" "$TEST_ROOT/canon.before" || fail 'dry-run modified the canon'
 # The real thing: sections shrink, identifiers survive, the import is
 # promoted, its store is archived, and the next sync has nothing to re-import.
 : >"$SYNTH_LOG"
-run_compact good --budget 1500 >"$TEST_ROOT/compact.out" || fail "compact exited nonzero: $(cat "$TEST_ROOT/compact.out")"
+run_compact good --budget 2800 >"$TEST_ROOT/compact.out" || fail "compact exited nonzero: $(cat "$TEST_ROOT/compact.out")"
 after_bytes=$(wc -c <"$CANON" | tr -d ' ')
 [ "$after_bytes" -lt "$before_bytes" ] || fail "compact did not shrink the canon ($before_bytes -> $after_bytes)"
-[ "$after_bytes" -le 1500 ] || fail "compact left the canon over budget: $after_bytes bytes"
+[ "$after_bytes" -le 2800 ] || fail "compact left the canon over budget: $after_bytes bytes"
 assert_contains "$TEST_ROOT/compact.out" 'archived 1 store file(s)'
 for id in 'G-Z3LXJSB0MB' 'https://example.com/docs/abc123' 'de3e1c3' 'npm version patch' 'AW-11072965548' 'https://ads.example/v9/tag'; do
   assert_contains "$CANON" "$id"
@@ -177,7 +184,7 @@ run_agent status >/dev/null || fail 'status failed after a successful compact'
 # and the text between a broken span's closing backtick and the next opening
 # one, so dropping those lines is accepted, while badge/P<n>- must survive.
 write_fixture
-run_compact prose --budget 1500 >"$TEST_ROOT/prose.out" 2>&1 || fail "compact refused a rewrite over prose tokens: $(cat "$TEST_ROOT/prose.out")"
+run_compact prose --budget 2800 >"$TEST_ROOT/prose.out" 2>&1 || fail "compact refused a rewrite over prose tokens: $(cat "$TEST_ROOT/prose.out")"
 assert_not_contains "$CANON" '146-account'
 assert_not_contains "$CANON" 'compare it to HEAD'
 assert_contains "$CANON" 'badge/P<n>-'
@@ -188,19 +195,33 @@ assert_not_contains "$TEST_ROOT/prose.out" 'kept'
 # and the section is kept verbatim, so the file stays over budget (exit 1).
 write_fixture
 : >"$SYNTH_LOG"
-if run_compact drop --budget 1500 >"$TEST_ROOT/drop.out" 2>&1; then
+if run_compact drop --budget 2800 >"$TEST_ROOT/drop.out" 2>&1; then
   fail 'compact exited 0 after keeping a section and staying over budget'
 fi
 assert_contains "$TEST_ROOT/drop.out" 'the rewrite dropped:'
 assert_contains "$TEST_ROOT/drop.out" 'G-Z3LXJSB0MB'
 assert_contains "$TEST_ROOT/drop.out" 'still'
+assert_contains "$TEST_ROOT/drop.out" '## Colours: '
+assert_not_contains "$TEST_ROOT/drop.out" '## Colours: kept'
+
+# A section with no URL is guarded too: the URL grep finds nothing there, and
+# under set -e that once aborted the extractor before the bare tokens were
+# read, so a rewrite that dropped a hex colour passed unchecked.
+write_fixture
+if run_compact hex --budget 2800 >"$TEST_ROOT/hex.out" 2>&1; then
+  fail 'compact exited 0 after dropping a token from a URL-less section'
+fi
+assert_contains "$TEST_ROOT/hex.out" '## Colours: '
+assert_contains "$TEST_ROOT/hex.out" 'the rewrite dropped:'
+assert_contains "$TEST_ROOT/hex.out" '0E0E0E'
+assert_contains "$CANON" '0E0E0E'
 assert_contains "$CANON" 'G-Z3LXJSB0MB'
 assert_contains "$CANON" 'explains at length why the rule exists'
 assert_contains "$CANON" '## Promoted from claude'
 
 # Falsify the heading guard.
 write_fixture
-if run_compact badhead --budget 1500 >"$TEST_ROOT/badhead.out" 2>&1; then
+if run_compact badhead --budget 2800 >"$TEST_ROOT/badhead.out" 2>&1; then
   fail 'compact exited 0 with every rewrite refused'
 fi
 assert_contains "$TEST_ROOT/badhead.out" 'does not start with the heading'
@@ -209,7 +230,7 @@ cmp -s "$CANON" "$TEST_ROOT/canon.before" || fail 'a refused heading rewrite cha
 
 # Falsify the floor: a heading alone is a refusal, not a rewrite.
 write_fixture
-if run_compact tiny --budget 1500 >"$TEST_ROOT/tiny.out" 2>&1; then
+if run_compact tiny --budget 2800 >"$TEST_ROOT/tiny.out" 2>&1; then
   fail 'compact accepted a refusal-sized rewrite'
 fi
 assert_contains "$TEST_ROOT/tiny.out" 'below the 25% floor'
@@ -218,7 +239,7 @@ cmp -s "$CANON" "$TEST_ROOT/canon.before" || fail 'a refusal-sized rewrite chang
 
 # A failing model keeps everything.
 write_fixture
-if run_compact fail --budget 1500 >"$TEST_ROOT/fail.out" 2>&1; then
+if run_compact fail --budget 2800 >"$TEST_ROOT/fail.out" 2>&1; then
   fail 'compact exited 0 when the synthesizer failed'
 fi
 assert_contains "$TEST_ROOT/fail.out" 'the synthesizer failed'

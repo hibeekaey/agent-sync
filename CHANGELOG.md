@@ -30,6 +30,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   merge kept. The size floor alone let a merge through that had summarised
   away 919 of a 195 KB document's 1,116 identifiers while keeping 43% of its
   lines. The merge prompt also now asks for identifiers to survive verbatim.
+  The guard was falsified against a real run: a section without a URL was
+  unguarded because the script's `set -e` aborted the extractor at the URL
+  grep, and a two-line backtick span produced a phantom identifier; both are
+  pinned by tests.
 - `agent hooks launchd` prints a macOS LaunchAgent that runs `agent compact`
   daily; the cron fallback gains a weekly compact line.
 
