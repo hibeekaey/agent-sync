@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-09-03
+
+### Added
+
+- `agent compact` keeps the synthesized file under a byte budget
+  (`AGENT_SYNC_BUDGET`, default 150000, or `--budget`). The deterministic
+  merge re-imports every memory store verbatim on every sync, so a file that
+  started at 900 curated lines had reached 4,900 with 82% of it raw imports,
+  and the curated part alone stood at 195 KB against a 150 KB ceiling. When
+  over budget, compact promotes each raw imported section into curated notes
+  and archives its store files to `~/.config/agent-sync/archive/`, so the
+  next sync has nothing to re-import; then it rewrites every curated section
+  of 2 KB or more shorter with the model, one section at a time. A rewrite
+  is refused and the section kept unless it starts with the same heading, is
+  at least a quarter of the original, and still contains every backtick
+  span, URL and letter-and-digit token the original had. The command exits at
+  once while the file is within budget, so it is cheap to schedule, and it
+  rejects `--synthesizer deterministic` because a merge cannot summarize.
+- `sync` reports the file's size against the budget after every run;
+  `status` and `doctor` fail while it is over budget.
+- The whole-document semantic synthesis is now held to the same identifier
+  guard: a merge that no longer contains every backtick span, URL and
+  letter-and-digit token of the document is refused and the deterministic
+  merge kept. The size floor alone let a merge through that had summarised
+  away 919 of a 195 KB document's 1,116 identifiers while keeping 43% of its
+  lines. The merge prompt also now asks for identifiers to survive verbatim.
+- `agent hooks launchd` prints a macOS LaunchAgent that runs `agent compact`
+  daily; the cron fallback gains a weekly compact line.
+
 ## [1.6.2] - 2026-08-17
 
 ### Fixed

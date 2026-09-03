@@ -40,8 +40,24 @@ installed agent's global instructions slot.
 	agent-sync did not write would be overwritten, it is preserved beside
 	the target as <file>.orig.
 
+*compact* [--budget BYTES] [--synthesizer MODE] [--force] [--dry-run]
+	Keep the synthesized file under a byte budget (default 150000, see
+	*AGENT_SYNC_BUDGET*). Exits at once while the file is within budget
+	unless *--force*. Otherwise each raw imported section is promoted into
+	curated notes under "## Promoted from AGENT" and its store files are
+	archived to ~/.config/agent-sync/archive/ and removed, so the next sync
+	has nothing to re-import; then every curated section of 2 KB or more is
+	rewritten shorter by the model, one section at a time. A rewrite is
+	refused, and the section kept, unless it starts with the same heading,
+	is at least a quarter of the original (a refusal-sized stub is not a
+	rewrite), and still contains every backtick span, URL and
+	letter-and-digit token of the original. Needs a model: *deterministic*
+	is rejected. The previous file is kept at <file>.bak. Exits 1 when the
+	file is still over budget afterwards.
+
 *status*
-	Per-agent parity check. Exits 1 when anything is stale (cron friendly).
+	Per-agent parity check. Exits 1 when anything is stale or the
+	synthesized file is over its byte budget (cron friendly).
 
 *diff*
 	Show stale targets as unified diffs. Exits 1 when anything is stale
@@ -105,8 +121,9 @@ installed agent's global instructions slot.
 
 *hooks* [TOOL]
 	Print verified automation snippets that keep memory fresh: Claude Code
-	SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
-	cron fallback. Printed, never installed.
+	SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, a macOS
+	launchd job that runs *compact* daily, and cron fallbacks. Printed,
+	never installed.
 
 # OPTIONS
 
@@ -140,6 +157,11 @@ installed agent's global instructions slot.
 	Synthesis mode (auto, claude, codex, deterministic) or a custom
 	command that reads a merge prompt on stdin and prints the merged
 	document on stdout.
+
+*AGENT_SYNC_BUDGET*
+	Byte budget for the synthesized file (default 150000). Reported by
+	sync, enforced by status and doctor, restored by *compact*; the
+	*--budget* flag of *compact* overrides it for one run.
 
 *AGENT_SYNC_ONLY*, *AGENT_SYNC_SKIP*
 	Comma-separated target filters used by sync, apply, status, diff, MCP sync

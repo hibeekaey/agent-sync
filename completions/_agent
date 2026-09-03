@@ -5,6 +5,7 @@ _agent() {
   local -a commands
   commands=(
     'sync:gather, synthesize, and redistribute agent memory'
+    'compact:keep the synthesized file under its byte budget'
     'status:per-agent parity check'
     'diff:show stale targets as unified diffs'
     'targets:list sync targets and detection state'
@@ -53,7 +54,7 @@ _agent() {
       _values 'subcommand' sync
       ;;
     hooks)
-      _values 'tool' claude codex gemini opencode
+      _values 'tool' claude codex gemini opencode launchd
       ;;
     sync)
       _arguments $color_opts \
@@ -69,6 +70,15 @@ _agent() {
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]' \
         '1:directory:_files -/'
+      ;;
+    compact)
+      _arguments $color_opts \
+        '--dry-run[print the plan without calling a model or writing]' \
+        '--force[compact even while within budget]' \
+        '--budget=[byte budget for the synthesized file]:bytes' \
+        '--synthesizer=[synthesis mode]:mode:(auto claude codex)' \
+        '--only=[comma-separated targets]' \
+        '--skip=[comma-separated targets]'
       ;;
   esac
 }

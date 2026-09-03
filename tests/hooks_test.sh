@@ -15,5 +15,15 @@ assert_not_contains "$TEST_ROOT/hooks-gemini.out" '"SessionEnd"'
 run_agent hooks opencode >"$TEST_ROOT/hooks-opencode.out"
 assert_contains "$TEST_ROOT/hooks-opencode.out" '.config/opencode/plugin/agent-sync.js'
 assert_not_contains "$TEST_ROOT/hooks-opencode.out" '.config/opencode/plugins/'
+run_agent hooks launchd >"$TEST_ROOT/hooks-launchd.out"
+assert_contains "$TEST_ROOT/hooks-launchd.out" 'LaunchAgents/io.agent-sync.compact.plist'
+assert_contains "$TEST_ROOT/hooks-launchd.out" '<string>agent compact</string>'
+assert_not_contains "$TEST_ROOT/hooks-launchd.out" 'SessionEnd'
+assert_contains "$TEST_ROOT/hooks.out" '<string>agent compact</string>'
+assert_contains "$TEST_ROOT/hooks.out" '0 9 * * 1 agent compact'
+if run_agent hooks nonsense >/dev/null 2>"$TEST_ROOT/hooks-bad.err"; then
+  fail 'hooks accepted an unknown tool'
+fi
+assert_contains "$TEST_ROOT/hooks-bad.err" 'launchd'
 
 echo 'hooks tests passed'

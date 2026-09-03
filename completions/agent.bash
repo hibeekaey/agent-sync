@@ -3,7 +3,7 @@ _agent_sync() {
   local cur prev commands
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD - 1]}"
-  commands="sync status diff targets doctor migrate gather apply link revert pack mcp skills hooks help version"
+  commands="sync compact status diff targets doctor migrate gather apply link revert pack mcp skills hooks help version"
   case "$prev" in
     migrate)
       COMPREPLY=($(compgen -W "claude codex cursor continue windsurf goose" -- "$cur"))
@@ -30,13 +30,13 @@ _agent_sync() {
       return
       ;;
     hooks)
-      COMPREPLY=($(compgen -W "claude codex gemini opencode" -- "$cur"))
+      COMPREPLY=($(compgen -W "claude codex gemini opencode launchd" -- "$cur"))
       return
       ;;
   esac
   case "$cur" in
     --*)
-      COMPREPLY=($(compgen -W "--synthesizer --dry-run --only --skip --import --url --env --header --color --no-color" -- "$cur"))
+      COMPREPLY=($(compgen -W "--synthesizer --dry-run --only --skip --budget --force --import --url --env --header --color --no-color" -- "$cur"))
       return
       ;;
   esac
