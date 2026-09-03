@@ -158,12 +158,17 @@ Usage:
   agent skills sync      additively synchronize the canonical skills directory
                          (default ~/.claude/skills) into every agent's
                          user-scope skills directory
-  agent compact [--budget BYTES] [--synthesizer MODE] [--force] [--dry-run]
+  agent compact [--budget BYTES] [--synthesizer MODE] [--force] [--keep-all]
+                [--dry-run]
                          keep the synthesized file under a byte budget:
                          promote raw imports into curated notes (archiving
                          their stores) and rewrite oversized sections
-                         shorter, one at a time, refusing any rewrite that
-                         drops a name, path, URL, id or number
+                         shorter, one at a time. A rewrite may forget how a
+                         lesson was learned, settled items and one-off
+                         references, but is refused if it drops a URL or a
+                         backtick span (paths, commands, ids); --keep-all
+                         forbids forgetting and also protects every bare
+                         letter-and-digit token
   agent hooks [TOOL]     print verified automation snippets that keep memory
                          fresh (claude, codex, gemini, opencode, launchd)
   agent help             this text
@@ -650,9 +655,9 @@ individual agents. Rewrite the whole document: fold the durable,
 non-duplicated facts from the imported sections into the curated sections,
 drop noise and duplicates, resolve conflicts in favor of the newest
 information, keep the document's structure and voice, and remove the
-imported sections you fold in. Keep every identifier, path, URL, command,
-number, date and name the document carries; anything inside backticks must
-survive verbatim. Print ONLY the new markdown document.
+imported sections you fold in.
+$(compact_keep_rules)
+Print ONLY the new markdown document.
 EOF
     echo
     echo '--- DOCUMENT ---'
@@ -708,6 +713,12 @@ COMPACT_IMPORT_FLOOR_PERCENT=8 # imports carry frontmatter and headers to drop
 COMPACT_OVERSHOOT_PERCENT=125  # accept a rewrite up to this far over target
 COMPACT_FORCE=0
 COMPACT_BUDGET=""
+# What a rewrite must keep. `stable` (the default) protects what an agent
+# cannot re-derive and must get exactly right: URLs and backtick spans, minus
+# one-off references (commit shas, PR and issue numbers, past versions, dates).
+# `strict` (--keep-all) also protects every bare token that mixes letters and
+# digits and forbids forgetting anything.
+COMPACT_MODE=stable
 
 compact_budget() {
   cb="${COMPACT_BUDGET:-${AGENT_SYNC_BUDGET:-$COMPACT_BUDGET_DEFAULT}}"
@@ -745,6 +756,7 @@ budget_report() {
 # grep ends in `|| true`: the script runs under set -e, and a section with no
 # URL would otherwise abort the group before the bare tokens are read.
 extract_identifiers() {
+  ei_mode="${2:-$COMPACT_MODE}"
   bt=$(printf '\140')
   {
     awk -v bt="$bt" '
@@ -764,9 +776,17 @@ extract_identifiers() {
       }
     ' "$1" | grep -v ' — ' || true
     grep -oE 'https?://[^] )>"`'"'"']+' "$1" || true
-    grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]' |
-      grep -vE '^[0-9]+-?[a-z]+$' || true
-  } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | LC_ALL=C sort -u
+    if [ "$ei_mode" = strict ]; then
+      grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]' |
+        grep -vE '^[0-9]+-?[a-z]+$' || true
+    fi
+  } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | {
+    if [ "$ei_mode" = strict ]; then
+      cat
+    else
+      grep -vE '^[0-9a-f]{6,40}$|^#?[0-9]+$|^v?[0-9]+(\.[0-9]+)+([-.][A-Za-z0-9]+)*$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || true
+    fi
+  } | LC_ALL=C sort -u
 }
 
 # The text whose identifiers a rewrite must keep: the document minus the
@@ -781,7 +801,7 @@ identifier_source() {
 
 # Print every identifier of $1 that $2 no longer contains.
 missing_identifiers() {
-  extract_identifiers "$1" | while IFS= read -r mi_id; do
+  extract_identifiers "$1" "${3:-$COMPACT_MODE}" | while IFS= read -r mi_id; do
     grep -qF -- "$mi_id" "$2" || printf '%s\n' "$mi_id"
   done
 }
@@ -824,6 +844,36 @@ compact_split() {
   ' "$SRC" >"$cs_dir/manifest"
 }
 
+# The keep/forget rules shared by every prompt, in the selected mode.
+compact_keep_rules() {
+  if [ "$COMPACT_MODE" = strict ]; then
+    cat <<'EOF'
+- Keep every rule, decision, owner ruling, fact, identifier, number, date,
+  version, path, URL, command and name. Anything inside backticks must
+  survive verbatim. Never paraphrase an identifier.
+- Remove repetition, narrative, anecdotes, and rationale that only restates
+  the rule. Keep a rationale only where the rule is not self-evident without
+  it. Merge duplicated points. Prefer tight bullets and tables.
+EOF
+    return
+  fi
+  cat <<'EOF'
+- Keep every CURRENT rule, decision and fact an agent needs to act on this
+  machine, and keep every hostname, URL, file path, command, environment
+  variable, account, tag, table and stream id, name and price exactly as
+  written. Anything inside backticks survives verbatim unless it is a commit
+  sha, a PR or issue number, a run id or a past version number.
+- You MAY forget, and should when it buys space: how a lesson was learned
+  (session narratives, dates of discovery, quoted remarks, counts of
+  corrections); items marked settled, refuted, muted, parked or "do not
+  re-raise" (drop them entirely); one-off references (commit shas, PR and
+  issue numbers, run ids, superseded versions); and anything else you judge
+  of low value to an agent doing this work in future. Never soften or
+  generalise a rule that stays.
+- Merge duplicated points. Prefer tight bullets and tables.
+EOF
+}
+
 compact_section_prompt() {
   cat <<EOF
 You are compacting one section of the memory file that agent-sync
@@ -832,14 +882,8 @@ $2 bytes; rewrite it to at most $3 bytes.
 
 Rules:
 - The first line is the heading. Keep it exactly as it is.
-- Keep every rule, decision, owner ruling, fact, identifier, number, date,
-  version, path, URL, command and name. Anything inside backticks must
-  survive verbatim. Never paraphrase an identifier.
-- Remove repetition, narrative, anecdotes, and rationale that only restates
-  the rule. Keep a rationale only where the rule is not self-evident without
-  it. Merge duplicated points. Prefer tight bullets and tables.
-- Do not add anything, do not soften or generalise a rule, do not change what
-  a rule means.
+$(compact_keep_rules)
+- Do not add anything.
 - Print ONLY the rewritten markdown section, starting with the heading.
 EOF
   if [ -n "$4" ]; then
@@ -865,13 +909,10 @@ Turn it into curated notes of at most $3 bytes.
 
 Rules:
 - The first line of your output must be exactly: ## Promoted from $4 ($5)
-- Keep every durable rule, decision, owner ruling, fact, identifier, number,
-  date, version, path, URL, command and name. Anything inside backticks must
-  survive verbatim. Never paraphrase an identifier.
+$(compact_keep_rules)
 - Drop the file path headers, YAML frontmatter, session ids, "Related" link
   lists, index lists, and anything that only narrates how a session went.
-- Merge duplicated points. Prefer tight bullets and tables.
-- Do not add anything, do not soften or generalise a rule.
+- Do not add anything.
 - Print ONLY the markdown, starting with the heading.
 EOF
   if [ -n "$6" ]; then
@@ -1025,6 +1066,7 @@ cmd_compact() {
       --skip=*) TARGET_SKIP=${1#*=}; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --force) COMPACT_FORCE=1; shift ;;
+      --keep-all) COMPACT_MODE=strict; shift ;;
       *)
         echo "${C_ERR}agent:${C_OFF} unknown compact option: $1" >&2
         return 2
@@ -1089,7 +1131,7 @@ cmd_compact() {
   ratio=$(((compressible - need) * 100 / compressible))
   [ "$ratio" -ge "$COMPACT_MIN_RATIO_PERCENT" ] || ratio="$COMPACT_MIN_RATIO_PERCENT"
   [ "$ratio" -lt 100 ] || ratio=99
-  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; rewriting compressible sections to ${ratio}% via ${C_PLAN}$COMPACT_KIND${C_OFF}"
+  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; rewriting compressible sections to ${ratio}% via ${C_PLAN}$COMPACT_KIND${C_OFF} ${C_DIM}(mode: $COMPACT_MODE)${C_OFF}"
   today=$(date +%Y-%m-%d)
   promoted=""
   refused=0

@@ -175,8 +175,8 @@ AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
 CLI selection overrides the environment. Model calls are non-interactive
 (Claude runs without session persistence; Codex runs ephemerally in a
 read-only sandbox), output is validated (a heading first, at least a quarter
-of the document's lines, and every backtick span, URL and letter-and-digit
-token of the document still present), the previous file is kept at
+of the document's lines, and every URL and backtick span of the document
+still present, one-off references excepted), the previous file is kept at
 `<file>.bak`, and every failure falls through toward the deterministic
 merge. A recursion guard stops a synthesizer-spawned agent from re-entering
 agent-sync.
@@ -198,13 +198,18 @@ When the file is over budget, each raw imported section is promoted into
 curated notes (`## Promoted from claude`) and its store files are archived
 to `~/.config/agent-sync/archive/` and removed, so the next sync has nothing
 to re-import. Then every curated section of 2 KB or more is rewritten
-shorter by the model, one section at a time. A rewrite is refused and the
-section kept unless it starts with the same heading, is at least a quarter
-of the original, and still contains every backtick span, URL and
-letter-and-digit token the original had: a summary that drops an identifier
-has lost the one thing an agent cannot re-derive. `sync` reports the size
-after every run; `status` and `doctor` fail while the file is over budget.
-`compact` needs a model and rejects `--synthesizer deterministic`.
+shorter by the model, one section at a time. A rewrite may forget how a
+lesson was learned, items marked settled, refuted, muted or parked, one-off
+references (commit shas, PR numbers, run ids, past versions) and anything
+else of low value, but it is refused and the section kept unless it starts
+with the same heading, is at least a quarter of the original, and still
+contains every URL and every backtick span the original had (paths,
+commands, hostnames, ids): those are the things an agent cannot re-derive.
+A rewrite that drops one gets a second attempt naming what it lost.
+`--keep-all` forbids forgetting and also protects every bare
+letter-and-digit token. `sync` reports the size after every run; `status`
+and `doctor` fail while the file is over budget. `compact` needs a model and
+rejects `--synthesizer deterministic`.
 
 ## Automating
 

@@ -40,20 +40,24 @@ installed agent's global instructions slot.
 	agent-sync did not write would be overwritten, it is preserved beside
 	the target as <file>.orig.
 
-*compact* [--budget BYTES] [--synthesizer MODE] [--force] [--dry-run]
+*compact* [--budget BYTES] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
 	Keep the synthesized file under a byte budget (default 150000, see
 	*AGENT_SYNC_BUDGET*). Exits at once while the file is within budget
 	unless *--force*. Otherwise each raw imported section is promoted into
 	curated notes under "## Promoted from AGENT" and its store files are
 	archived to ~/.config/agent-sync/archive/ and removed, so the next sync
 	has nothing to re-import; then every curated section of 2 KB or more is
-	rewritten shorter by the model, one section at a time. A rewrite is
-	refused, and the section kept, unless it starts with the same heading,
-	is at least a quarter of the original (a refusal-sized stub is not a
-	rewrite), and still contains every backtick span, URL and
-	letter-and-digit token of the original. Needs a model: *deterministic*
-	is rejected. The previous file is kept at <file>.bak. Exits 1 when the
-	file is still over budget afterwards.
+	rewritten shorter by the model, one section at a time. A rewrite may
+	forget how a lesson was learned, items marked settled, refuted, muted or
+	parked, one-off references (commit shas, PR numbers, run ids, past
+	versions) and anything else of low value; it is refused, and the section
+	kept, unless it starts with the same heading, is at least a quarter of
+	the original, and still contains every URL and every backtick span
+	(paths, commands, hostnames, ids) of the original. A rewrite that drops
+	one gets a second attempt naming what it lost. *--keep-all* forbids
+	forgetting and also protects every bare letter-and-digit token. Needs a
+	model: *deterministic* is rejected. The previous file is kept at
+	<file>.bak. Exits 1 when the file is still over budget afterwards.
 
 *status*
 	Per-agent parity check. Exits 1 when anything is stale or the

@@ -42,6 +42,8 @@ printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v told="$told" -v n=
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
   mode == "learn" && !told && /G-Z3LXJSB0MB/ { next }
   mode == "hex" && /0E0E0E/ { next }
+  mode == "forget" && /0E0E0E|Fixed in commit/ { next }
+  mode == "path" && /tokens.ts/ { next }
   mode == "prose" && /146-account/ { next }
   mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
   /`|https?:\/\/|[0-9]/ { print; n += length($0) + 1; next }
@@ -98,7 +100,9 @@ write_fixture() {
       printf 'A section with no URL in it, so the URL grep finds nothing and must not abort the rest.\n'
       i=$((i + 1))
     done
-    printf -- '- The dark ladder runs from 0E0E0E to 262626 and lime is BFFF72.\n\n## Small\n\none line\n'
+    printf -- '- The dark ladder runs from 0E0E0E to 262626 and lime is BFFF72.\n'
+    printf -- '- Fixed in commit %sde3e1c3%s for PR #93 on 2026-08-30, released as %sv1.2.1%s.\n' "$bt" "$bt" "$bt" "$bt"
+    printf -- '- Tokens live in %ssrc/config/tokens.ts%s beside %sscripts/check-tokens.mjs%s.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt"
   } >"$CANON"
   mkdir -p "$(dirname "$CLAUDE_A")"
   {
@@ -208,12 +212,28 @@ assert_contains "$TEST_ROOT/drop.out" 'still'
 assert_contains "$TEST_ROOT/drop.out" '## Colours: '
 assert_not_contains "$TEST_ROOT/drop.out" '## Colours: kept'
 
-# A section with no URL is guarded too: the URL grep finds nothing there, and
-# under set -e that once aborted the extractor before the bare tokens were
-# read, so a rewrite that dropped a hex colour passed unchecked.
+# Default mode may forget: a bare hex token and a one-off commit sha in
+# backticks may go, but a path span may not.
 write_fixture
-if run_compact hex --budget 2800 >"$TEST_ROOT/hex.out" 2>&1; then
-  fail 'compact exited 0 after dropping a token from a URL-less section'
+run_compact forget --budget 2800 >"$TEST_ROOT/forget.out" 2>&1 || fail "default mode refused a rewrite that only forgot one-off content: $(cat "$TEST_ROOT/forget.out")"
+assert_not_contains "$CANON" '0E0E0E'
+assert_not_contains "$CANON" 'Fixed in commit'
+assert_contains "$CANON" 'src/config/tokens.ts'
+assert_contains "$TEST_ROOT/forget.out" '(mode: stable)'
+write_fixture
+if run_compact path --budget 2800 >"$TEST_ROOT/path.out" 2>&1; then
+  fail 'default mode accepted a rewrite that dropped a path span'
+fi
+assert_contains "$TEST_ROOT/path.out" 'the rewrite dropped:'
+assert_contains "$TEST_ROOT/path.out" 'src/config/tokens.ts'
+assert_contains "$CANON" 'src/config/tokens.ts'
+
+# --keep-all: a section with no URL is guarded for bare tokens too. The URL
+# grep finds nothing there, and under set -e that once aborted the extractor
+# before the bare tokens were read, so a dropped hex colour passed unchecked.
+write_fixture
+if run_compact hex --keep-all --budget 2800 >"$TEST_ROOT/hex.out" 2>&1; then
+  fail 'compact --keep-all exited 0 after dropping a token from a URL-less section'
 fi
 assert_contains "$TEST_ROOT/hex.out" '## Colours: '
 assert_contains "$TEST_ROOT/hex.out" 'the rewrite dropped:'

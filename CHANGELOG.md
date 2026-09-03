@@ -23,7 +23,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   once while the file is within budget, so it is cheap to schedule, and it
   rejects `--synthesizer deterministic` because a merge cannot summarize. A
   rewrite that drops identifiers gets one more attempt that names exactly what
-  it lost; a second drop keeps the section as it was.
+  it lost; a second drop keeps the section as it was. By default a rewrite may
+  forget how a lesson was learned, items marked settled, refuted, muted or
+  parked, one-off references (commit shas, PR numbers, run ids, past
+  versions) and anything else of low value, while every URL and backtick span
+  (paths, commands, hostnames, ids) must survive; `--keep-all` forbids
+  forgetting and protects every bare letter-and-digit token too. Four strict
+  passes on a 195 KB file stalled at 164 KB because the text had reached the
+  floor that keeping every token allows.
 - `sync` reports the file's size against the budget after every run;
   `status` and `doctor` fail while it is over budget.
 - The whole-document semantic synthesis is now held to the same identifier

@@ -75,6 +75,7 @@ _agent() {
       _arguments $color_opts \
         '--dry-run[print the plan without calling a model or writing]' \
         '--force[compact even while within budget]' \
+        '--keep-all[forbid forgetting; protect every letter-and-digit token]' \
         '--budget=[byte budget for the synthesized file]:bytes' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex)' \
         '--only=[comma-separated targets]' \
