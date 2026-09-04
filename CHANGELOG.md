@@ -18,6 +18,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - Two temporary files were shared between rewrites (the prompt and the
   preamble-trimming scratch file); each rewrite now has its own.
+- Compaction archives only store versions captured by the preceding sync. A
+  store created or changed while model rewrites run stays live for the next
+  sync instead of being dropped from the canonical file.
+- The default identifier guard now recognizes unbackticked hostnames,
+  environment variables and long ids. Markdown rules after imported YAML
+  frontmatter no longer hide the identifiers that follow.
+- The concurrent worker queue now retains every PID after a full job window.
 
 ## [1.7.0] - 2026-09-03
 

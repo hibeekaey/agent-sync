@@ -25,6 +25,7 @@ DRY_RUN=0
 TARGET_ONLY="${AGENT_SYNC_ONLY:-}"
 TARGET_SKIP="${AGENT_SYNC_SKIP:-}"
 STATE_DIR="$AGENT_HOME/.config/agent-sync"
+IMPORT_SNAPSHOT_DIR="$STATE_DIR/import-snapshots"
 PACKS_DIR="$STATE_DIR/packs"
 PACKS_LOCK="$STATE_DIR/packs.lock"
 MCP_DIR="$STATE_DIR/mcp.d"
@@ -428,6 +429,8 @@ import_agent() {
   ensure_private_tmp
   content="$PRIVATE_TMP/import-$from"
   list="$PRIVATE_TMP/import-list-$from"
+  snapshot="$PRIVATE_TMP/import-snapshot-$from"
+  : >"$snapshot"
   {
     echo "## Memories imported from $from"
     echo
@@ -438,6 +441,7 @@ import_agent() {
   found=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    printf '%s\t%s\n' "$f" "$(sum "$f")" >>"$snapshot"
     {
       echo
       echo "### $f"
@@ -448,6 +452,20 @@ import_agent() {
     found=$((found + 1))
   done <"$list"
   import_into_canon "$from" "$content" "$found"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$IMPORT_SNAPSHOT_DIR"
+    if [ "$found" -gt 0 ]; then
+      IMPORT_SNAPSHOT_TMP=$(mktemp "$IMPORT_SNAPSHOT_DIR/.agent-sync-import.XXXXXXXX") || {
+        echo "${C_ERR}agent:${C_OFF} could not record the import snapshot for $from" >&2
+        exit 1
+      }
+      cp "$snapshot" "$IMPORT_SNAPSHOT_TMP"
+      mv "$IMPORT_SNAPSHOT_TMP" "$IMPORT_SNAPSHOT_DIR/$from"
+      IMPORT_SNAPSHOT_TMP=""
+    else
+      rm -f "$IMPORT_SNAPSHOT_DIR/$from"
+    fi
+  fi
   IMPORTED_COUNT="$found"
 }
 
@@ -767,7 +785,8 @@ budget_report() {
 }
 
 # Everything in a document an agent cannot re-derive: backtick spans, URLs,
-# and bare tokens that mix letters and digits (ids, versions, shas, keys).
+# hostnames, environment variable names, long ids, and bare tokens that mix
+# letters and digits (ids, versions, shas, keys).
 # Backticks are paired across the whole file, not per line, so a span broken
 # across two lines is one span and the prose between it and the next span is
 # not; each line of a multi-line span must survive on its own. A span carrying
@@ -799,6 +818,10 @@ extract_identifiers() {
     if [ "$ei_mode" = strict ]; then
       grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]' |
         grep -vE '^[0-9]+-?[a-z]+$' || true
+    else
+      # Stable mode needs these candidates too: a hostname or an environment
+      # variable is often written as prose rather than inside backticks.
+      grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" || true
     fi
   } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | {
     if [ "$ei_mode" = strict ]; then
@@ -822,6 +845,7 @@ stable_identifiers_only() {
       /^https?:\/\// { print; next }
       /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(io|com|org|net|app|dev|cloud|co|ai|me|ng|us|uk|de|fr|eu|sh|xyz|info|biz|tv|gg|so|to|ly)$/ { print; next }
       /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/ { print; next }
+      /^[0-9]+-?[a-z]+$/ { next }
       length($0) >= 8 && /[0-9]/ && /[A-Za-z]/ && /^[A-Za-z0-9._@:+-]+$/ { print; next }
     ' || true
 }
@@ -830,8 +854,13 @@ stable_identifiers_only() {
 # import path headers and store frontmatter a merge is told to drop.
 identifier_source() {
   awk '
-    /^### \// { next }
-    /^---$/ { fm = !fm; next }
+    /^### \// { after_path = 1; next }
+    # Imported stores put YAML frontmatter immediately after their path
+    # header. A later Markdown rule (---) is content, never frontmatter.
+    after_path && /^$/ { next }
+    after_path && /^---$/ { fm = 1; after_path = 0; next }
+    after_path { after_path = 0 }
+    fm && /^---$/ { fm = 0; next }
     !fm { print }
   ' "$1"
 }
@@ -1035,14 +1064,32 @@ compact_rewrite() {
   return 1
 }
 
-# Move one agent's store files into a dated tarball under the state dir and
-# remove them, but only once the tarball lists every file it was given.
+# Move only the unchanged store files captured by the import snapshot into a
+# dated tarball. A store written after sync must stay live: its text was never
+# promoted, so deleting it would lose it from the next sync.
 archive_stores() {
   as_from="$1"
   as_list="$PRIVATE_TMP/archive-list-$as_from"
-  sources_for "$as_from" >"$as_list"
+  as_snapshot="$IMPORT_SNAPSHOT_DIR/$as_from"
+  if [ ! -f "$as_snapshot" ]; then
+    echo "${C_ERR}agent:${C_OFF} no import snapshot for $as_from; leaving its stores in place" >&2
+    return 1
+  fi
+  : >"$as_list"
+  as_skipped=0
+  while IFS="$TAB" read -r f fingerprint; do
+    [ -n "$f" ] || continue
+    if [ -f "$f" ] && [ "$(sum "$f")" = "$fingerprint" ]; then
+      printf '%s\n' "$f" >>"$as_list"
+    else
+      as_skipped=$((as_skipped + 1))
+    fi
+  done <"$as_snapshot"
   as_count=$(grep -c . "$as_list" || true)
-  [ "$as_count" -gt 0 ] || return 0
+  if [ "$as_count" -eq 0 ]; then
+    echo "${C_WARN}$as_from: no imported store still matches its snapshot; leaving $as_skipped store file(s) in place${C_OFF}" >&2
+    return 1
+  fi
   mkdir -p "$STATE_DIR/archive"
   as_tar="$STATE_DIR/archive/stores-$as_from-$(date +%Y%m%d-%H%M%S).tar"
   : >"$as_tar"
@@ -1069,6 +1116,11 @@ archive_stores() {
     as_tar="$as_tar.gz"
   fi
   echo "$as_from: ${C_DIM}archived $as_count store file(s) to ${C_PATH}$as_tar${C_OFF}"
+  if [ "$as_skipped" -gt 0 ]; then
+    echo "${C_WARN}$as_from: left $as_skipped changed store file(s) in place for the next sync${C_OFF}" >&2
+    return 1
+  fi
+  rm -f "$as_snapshot"
 }
 
 # Rewrite one chunk in the background. Leaves $chunk.new on success, and
@@ -1239,14 +1291,15 @@ cmd_compact() {
       *) continue ;;
     esac
     compact_worker "$chunk" "$kind" "$target" "$today" &
-    running="$running $!"
+    running="${running:+$running }$!"
     nrunning=$((nrunning + 1))
     if [ "$nrunning" -ge "$jobs" ]; then
-      oldest=${running# }
-      oldest=${oldest%% *}
+      oldest=${running%% *}
       wait "$oldest" || true
-      running=" ${running#* "$oldest"}"
-      [ "$running" = "  " ] && running=""
+      case "$running" in
+        *" "*) running=${running#* } ;;
+        *) running="" ;;
+      esac
       nrunning=$((nrunning - 1))
     fi
   done <"$cdir/manifest"
