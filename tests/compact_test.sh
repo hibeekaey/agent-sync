@@ -201,6 +201,21 @@ assert_contains "$CANON" 'badge/P<n>-'
 assert_contains "$CANON" '<sha>'
 assert_not_contains "$TEST_ROOT/prose.out" 'kept'
 
+# Concurrency changes the schedule, not the result: three at a time yields the
+# same canon, reported in document order, and the header names the job count.
+write_fixture
+: >"$SYNTH_LOG"
+run_compact good --jobs 3 --budget 2800 >"$TEST_ROOT/jobs.out" || fail "compact --jobs 3 exited nonzero: $(cat "$TEST_ROOT/jobs.out")"
+cmp -s "$CANON" "$TEST_ROOT/canon.compacted" || fail 'compact --jobs 3 produced a different canon from the sequential run'
+assert_contains "$TEST_ROOT/jobs.out" 'jobs: 3)'
+grep -n '^## Rules: \|^## Colours: \|^import:claude: ' "$TEST_ROOT/jobs.out" | cut -d: -f1 | tr '\n' ' ' | grep -qE '^([0-9]+) ([0-9]+) ([0-9]+) $' || fail 'report lines missing'
+r=$(grep -n '^## Rules: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); c=$(grep -n '^## Colours: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); i=$(grep -n '^import:claude: ' "$TEST_ROOT/jobs.out" | cut -d: -f1)
+[ "$r" -lt "$c" ] && [ "$c" -lt "$i" ] || fail "report is not in document order: Rules=$r Colours=$c import=$i"
+if run_compact good --jobs 0 --budget 2800 >"$TEST_ROOT/jobs0.out" 2>&1; then
+  fail 'compact accepted --jobs 0'
+fi
+assert_contains "$TEST_ROOT/jobs0.out" 'jobs must be a positive number'
+
 # Falsify the identifier guard: a rewrite that drops G-Z3LXJSB0MB is refused
 # and the section is kept verbatim, so the file stays over budget (exit 1).
 write_fixture
@@ -223,7 +238,7 @@ assert_not_contains "$CANON" 'Fixed in commit'
 assert_not_contains "$CANON" 'countryHintFrom'
 assert_not_contains "$CANON" 'src/config/tokens.ts'
 assert_contains "$CANON" 'meter-proxy.estate-example.io'
-assert_contains "$TEST_ROOT/forget.out" '(mode: stable)'
+assert_contains "$TEST_ROOT/forget.out" '(mode: stable,'
 # ...but a hostname, an environment variable name and a real URL may not go,
 # while a localhost URL on the same line is not what keeps it.
 write_fixture

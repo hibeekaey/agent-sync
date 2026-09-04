@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-09-04
+
+### Added
+
+- `compact` rewrites sections concurrently, `--jobs` at a time (default 4,
+  `AGENT_SYNC_COMPACT_JOBS`). Each rewrite is a model call of a minute or
+  more and they ran strictly one after another, so a 19-section file took
+  about 25 minutes a pass; four in flight bring that to about 8. Results are
+  still reported in document order once every worker has finished.
+
+### Fixed
+
+- Two temporary files were shared between rewrites (the prompt and the
+  preamble-trimming scratch file); each rewrite now has its own.
+
 ## [1.7.0] - 2026-09-03
 
 ### Added

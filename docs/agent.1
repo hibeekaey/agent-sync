@@ -62,7 +62,7 @@ agent\-sync did not write would be overwritten, it is preserved beside
 the target as <file>.\&orig.\&
 .PP
 .RE
-\fBcompact\fR [\-\-budget BYTES] [\-\-synthesizer MODE] [\-\-force] [\-\-keep\-all] [\-\-dry\-run]
+\fBcompact\fR [\-\-budget BYTES] [\-\-jobs N] [\-\-synthesizer MODE] [\-\-force] [\-\-keep\-all] [\-\-dry\-run]
 .RS 4
 Keep the synthesized file under a byte budget (default 150000, see
 \fBAGENT_SYNC_BUDGET\fR).\& Exits at once while the file is within budget
@@ -79,9 +79,11 @@ the original, and still contains every real URL, hostname, environment
 variable and long id of the original (paths, commands and code words are
 asked for but may go with a story the rewrite forgets).\& A rewrite that drops one gets a
 second attempt naming what it lost.\& \fB\-\-keep\-all\fR forbids forgetting and
-protects every backtick span and bare letter\-and\-digit token.\& Needs a
-model: \fBdeterministic\fR is rejected.\& The previous file is kept at
-<file>.\&bak.\& Exits 1 when the file is still over budget afterwards.\&
+protects every backtick span and bare letter\-and\-digit token.\& Sections
+are rewritten \fB\-\-jobs\fR at a time (default 4, or \fBAGENT_SYNC_COMPACT_JOBS\fR),
+each a model call of a minute or more.\& Needs a model: \fBdeterministic\fR is
+rejected.\& The previous file is kept at <file>.\&bak.\& Exits 1 when the file
+is still over budget afterwards.\&
 .PP
 .RE
 \fBstatus\fR
@@ -230,6 +232,12 @@ document on stdout.\&
 Byte budget for the synthesized file (default 150000).\& Reported by
 sync, enforced by status and doctor, restored by \fBcompact\fR; the
 \fB\-\-budget\fR flag of \fBcompact\fR overrides it for one run.\&
+.PP
+.RE
+\fBAGENT_SYNC_COMPACT_JOBS\fR
+.RS 4
+How many sections \fBcompact\fR rewrites at once (default 4); \fB\-\-jobs\fR
+overrides it for one run.\&
 .PP
 .RE
 \fBAGENT_SYNC_ONLY\fR, \fBAGENT_SYNC_SKIP\fR

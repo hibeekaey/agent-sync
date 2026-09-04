@@ -192,6 +192,7 @@ budget (150 KB by default, `AGENT_SYNC_BUDGET` or `--budget` to change it):
 agent compact             # exits at once while the file is within budget
 agent compact --dry-run   # the plan: which sections shrink, to what size
 agent compact --force     # compact anyway
+agent compact --jobs 8    # rewrite eight sections at a time (default 4)
 ```
 
 When the file is over budget, each raw imported section is promoted into

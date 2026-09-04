@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.7.0"
+VERSION="1.8.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -158,8 +158,8 @@ Usage:
   agent skills sync      additively synchronize the canonical skills directory
                          (default ~/.claude/skills) into every agent's
                          user-scope skills directory
-  agent compact [--budget BYTES] [--synthesizer MODE] [--force] [--keep-all]
-                [--dry-run]
+  agent compact [--budget BYTES] [--jobs N] [--synthesizer MODE] [--force]
+                [--keep-all] [--dry-run]
                          keep the synthesized file under a byte budget:
                          promote raw imports into curated notes (archiving
                          their stores) and rewrite oversized sections
@@ -168,7 +168,9 @@ Usage:
                          references, but is refused if it drops a real URL,
                          a hostname, an environment variable or a long id;
                          --keep-all forbids forgetting and protects every
-                         backtick span and bare letter-and-digit token
+                         backtick span and bare letter-and-digit token;
+                         sections are rewritten --jobs at a time (default
+                         $COMPACT_JOBS_DEFAULT, or AGENT_SYNC_COMPACT_JOBS)
   agent hooks [TOOL]     print verified automation snippets that keep memory
                          fresh (claude, codex, gemini, opencode, launchd)
   agent help             this text
@@ -565,9 +567,8 @@ strip_synth_preamble() {
     /^#/ { print NR; exit }
   ' "$sp_out")
   [ -n "$sp_at" ] || return 0
-  ensure_private_tmp
-  tail -n +"$sp_at" "$sp_out" >"$PRIVATE_TMP/synth-trimmed"
-  cp "$PRIVATE_TMP/synth-trimmed" "$sp_out"
+  tail -n +"$sp_at" "$sp_out" >"$sp_out.trimmed"
+  mv "$sp_out.trimmed" "$sp_out"
 }
 
 # Run one model call: the prompt on stdin, the document on stdout. Shared by
@@ -713,6 +714,11 @@ COMPACT_IMPORT_FLOOR_PERCENT=8 # imports carry frontmatter and headers to drop
 COMPACT_OVERSHOOT_PERCENT=125  # accept a rewrite up to this far over target
 COMPACT_FORCE=0
 COMPACT_BUDGET=""
+# Sections are rewritten concurrently, this many at a time. Each rewrite is
+# one model call of a minute or more, so a 19-section file that took 25
+# minutes in sequence takes about 8 with four in flight.
+COMPACT_JOBS_DEFAULT=4
+COMPACT_JOBS=""
 # What a rewrite must keep. `stable` (the default) hard-protects only what
 # routes traffic or unlocks access and cannot be re-derived: real URLs and
 # hostnames, environment variable names, and long ids (tags, tables, streams,
@@ -736,6 +742,17 @@ compact_budget() {
 
 file_bytes() {
   wc -c <"$1" | tr -d ' '
+}
+
+compact_jobs() {
+  cj="${COMPACT_JOBS:-${AGENT_SYNC_COMPACT_JOBS:-$COMPACT_JOBS_DEFAULT}}"
+  case "$cj" in
+    '' | *[!0-9]* | 0)
+      echo "${C_ERR}agent:${C_OFF} jobs must be a positive number: $cj" >&2
+      return 2
+      ;;
+  esac
+  echo "$cj"
 }
 
 # One line on the synthesized file's size. Returns 1 when it is over budget.
@@ -959,7 +976,7 @@ compact_rewrite() {
   cr_chunk="$1" cr_out="$2" cr_target="$3" cr_floor="$4" cr_head="$5"
   cr_kind="$6" cr_ids="$7" cr_from="$8" cr_date="$9"
   cr_in=$(file_bytes "$cr_chunk")
-  cr_prompt="$PRIVATE_TMP/compact-prompt"
+  cr_prompt="$cr_out.prompt"
   cr_prev=""
   cr_dropped=""
   cr_attempt=0
@@ -1054,12 +1071,50 @@ archive_stores() {
   echo "$as_from: ${C_DIM}archived $as_count store file(s) to ${C_PATH}$as_tar${C_OFF}"
 }
 
+# Rewrite one chunk in the background. Leaves $chunk.new on success, and
+# always $chunk.status (accepted | promoted:AGENT | kept) and $chunk.line.
+compact_worker() {
+  cw_chunk="$1" cw_kind="$2" cw_target="$3" cw_today="$4"
+  cw_bytes=$(file_bytes "$cw_chunk")
+  cw_out="$cw_chunk.new"
+  case "$cw_kind" in
+    import:*)
+      cw_from=${cw_kind#import:}
+      cw_inner="$cw_chunk.inner"
+      # The model sees the import without its markers; the identifier
+      # check ignores the path headers and frontmatter it is told to drop.
+      sed '1d;$d' "$cw_chunk" >"$cw_inner"
+      cw_ids="$cw_chunk.ids"
+      identifier_source "$cw_inner" >"$cw_ids"
+      if cw_reason=$(compact_rewrite "$cw_inner" "$cw_out" "$cw_target" "$COMPACT_IMPORT_FLOOR_PERCENT" "## Promoted from $cw_from" import "$cw_ids" "$cw_from" "$cw_today" 2>&1 >/dev/null); then
+        printf 'import:%s: %s -> %s%s bytes%s %s(promoted)%s\n' "$cw_from" "$cw_bytes" "$C_OK" "$(file_bytes "$cw_out")" "$C_OFF" "$C_DIM" "$C_OFF" >"$cw_chunk.line"
+        printf 'promoted:%s\n' "$cw_from" >"$cw_chunk.status"
+      else
+        printf 'import:%s: %s -> %skept%s %s(%s)%s\n' "$cw_from" "$cw_bytes" "$C_WARN" "$C_OFF" "$C_DIM" "$cw_reason" "$C_OFF" >"$cw_chunk.line"
+        rm -f "$cw_out"
+        printf 'kept\n' >"$cw_chunk.status"
+      fi
+      ;;
+    section)
+      cw_heading=$(head -1 "$cw_chunk")
+      if cw_reason=$(compact_rewrite "$cw_chunk" "$cw_out" "$cw_target" "$COMPACT_SECTION_FLOOR_PERCENT" "$cw_heading" section "$cw_chunk" "" "" 2>&1 >/dev/null); then
+        printf '%s: %s -> %s%s bytes%s\n' "$cw_heading" "$cw_bytes" "$C_OK" "$(file_bytes "$cw_out")" "$C_OFF" >"$cw_chunk.line"
+        printf 'accepted\n' >"$cw_chunk.status"
+      else
+        printf '%s: %s -> %skept%s %s(%s)%s\n' "$cw_heading" "$cw_bytes" "$C_WARN" "$C_OFF" "$C_DIM" "$cw_reason" "$C_OFF" >"$cw_chunk.line"
+        rm -f "$cw_out"
+        printf 'kept\n' >"$cw_chunk.status"
+      fi
+      ;;
+  esac
+}
+
 cmd_compact() {
   SYNTHESIZER_REQUEST="${AGENT_SYNC_SYNTHESIZER:-auto}"
   SYNTHESIZER_FROM_CLI=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --budget | --synthesizer | --only | --skip)
+      --budget | --jobs | --synthesizer | --only | --skip)
         opt="$1"
         if [ "$#" -lt 2 ]; then
           echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
@@ -1067,6 +1122,7 @@ cmd_compact() {
         fi
         case "$opt" in
           --budget) COMPACT_BUDGET="$2" ;;
+          --jobs) COMPACT_JOBS="$2" ;;
           --synthesizer)
             SYNTHESIZER_REQUEST="$2"
             SYNTHESIZER_FROM_CLI=1
@@ -1077,6 +1133,7 @@ cmd_compact() {
         shift 2
         ;;
       --budget=*) COMPACT_BUDGET=${1#*=}; shift ;;
+      --jobs=*) COMPACT_JOBS=${1#*=}; shift ;;
       --synthesizer=*)
         SYNTHESIZER_REQUEST=${1#*=}
         SYNTHESIZER_FROM_CLI=1
@@ -1096,6 +1153,7 @@ cmd_compact() {
   validate_synthesizer_request || return 2
   require_src
   budget=$(compact_budget) || return 2
+  jobs=$(compact_jobs) || return 2
   if [ "$SYNTHESIZER_REQUEST" = deterministic ]; then
     echo "${C_ERR}agent:${C_OFF} compact needs a model synthesizer (claude, codex or a custom command); the deterministic merge cannot summarize" >&2
     return 2
@@ -1151,62 +1209,63 @@ cmd_compact() {
   ratio=$(((compressible - need) * 100 / compressible))
   [ "$ratio" -ge "$COMPACT_MIN_RATIO_PERCENT" ] || ratio="$COMPACT_MIN_RATIO_PERCENT"
   [ "$ratio" -lt 100 ] || ratio=99
-  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; rewriting compressible sections to ${ratio}% via ${C_PLAN}$COMPACT_KIND${C_OFF} ${C_DIM}(mode: $COMPACT_MODE)${C_OFF}"
+  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; rewriting compressible sections to ${ratio}% via ${C_PLAN}$COMPACT_KIND${C_OFF} ${C_DIM}(mode: $COMPACT_MODE, jobs: $jobs)${C_OFF}"
   today=$(date +%Y-%m-%d)
-  promoted=""
-  refused=0
+  # Rewrites run concurrently, $jobs at a time; each worker leaves its result
+  # in $chunk.status and its report line in $chunk.line, and the report is
+  # printed in document order once every worker has finished.
+  running=""
+  nrunning=0
   while IFS='|' read -r idx kind; do
     chunk="$cdir/chunk-$(printf '%04d' "$idx")"
     bytes=$(file_bytes "$chunk")
-    out="$chunk.new"
     case "$kind" in
-      import:pack:*) ;;
+      import:pack:*) continue ;;
       import:*)
-        from=${kind#import:}
-        inner="$chunk.inner"
-        # The model sees the import without its markers; the identifier
-        # check ignores the path headers and frontmatter it is told to drop.
-        sed '1d;$d' "$chunk" >"$inner"
-        ids="$chunk.ids"
-        identifier_source "$inner" >"$ids"
         target=$((bytes * ratio / 100))
         if [ "$DRY_RUN" -eq 1 ]; then
-          echo "${C_PLAN}dry-run:${C_OFF} would promote import:$from ($bytes bytes) to about $target and archive its stores"
+          echo "${C_PLAN}dry-run:${C_OFF} would promote import:${kind#import:} ($bytes bytes) to about $target and archive its stores"
           continue
-        fi
-        printf 'import:%s: %s -> ' "$from" "$bytes"
-        if reason=$(compact_rewrite "$inner" "$out" "$target" "$COMPACT_IMPORT_FLOOR_PERCENT" "## Promoted from $from" import "$ids" "$from" "$today" 2>&1 >/dev/null); then
-          echo "${C_OK}$(file_bytes "$out") bytes${C_OFF} ${C_DIM}(promoted)${C_OFF}"
-          promoted="$promoted $from"
-        else
-          echo "${C_WARN}kept${C_OFF} ${C_DIM}($reason)${C_OFF}"
-          rm -f "$out"
-          refused=$((refused + 1))
         fi
         ;;
       section)
         [ "$bytes" -ge "$COMPACT_MIN_SECTION_BYTES" ] || continue
-        heading=$(head -1 "$chunk")
         target=$((bytes * ratio / 100))
         if [ "$DRY_RUN" -eq 1 ]; then
-          echo "${C_PLAN}dry-run:${C_OFF} would rewrite \"$heading\" ($bytes bytes) to about $target"
+          echo "${C_PLAN}dry-run:${C_OFF} would rewrite \"$(head -1 "$chunk")\" ($bytes bytes) to about $target"
           continue
         fi
-        printf '%s: %s -> ' "$heading" "$bytes"
-        if reason=$(compact_rewrite "$chunk" "$out" "$target" "$COMPACT_SECTION_FLOOR_PERCENT" "$heading" section "$chunk" "" "" 2>&1 >/dev/null); then
-          echo "${C_OK}$(file_bytes "$out") bytes${C_OFF}"
-        else
-          echo "${C_WARN}kept${C_OFF} ${C_DIM}($reason)${C_OFF}"
-          rm -f "$out"
-          refused=$((refused + 1))
-        fi
         ;;
+      *) continue ;;
     esac
+    compact_worker "$chunk" "$kind" "$target" "$today" &
+    running="$running $!"
+    nrunning=$((nrunning + 1))
+    if [ "$nrunning" -ge "$jobs" ]; then
+      oldest=${running# }
+      oldest=${oldest%% *}
+      wait "$oldest" || true
+      running=" ${running#* "$oldest"}"
+      [ "$running" = "  " ] && running=""
+      nrunning=$((nrunning - 1))
+    fi
   done <"$cdir/manifest"
+  wait
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "${C_PLAN}dry-run: no model was called and nothing was written${C_OFF}"
     return 0
   fi
+  promoted=""
+  refused=0
+  while IFS='|' read -r idx kind; do
+    chunk="$cdir/chunk-$(printf '%04d' "$idx")"
+    [ -f "$chunk.line" ] || continue
+    cat "$chunk.line"
+    case "$(cat "$chunk.status")" in
+      promoted:*) promoted="$promoted ${kind#import:}" ;;
+      kept) refused=$((refused + 1)) ;;
+    esac
+  done <"$cdir/manifest"
   CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
     echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $SRC" >&2
     exit 1
