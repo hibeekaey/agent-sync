@@ -174,10 +174,44 @@ AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
 
 CLI selection overrides the environment. Model calls are non-interactive
 (Claude runs without session persistence; Codex runs ephemerally in a
-read-only sandbox), output is validated, the previous file is kept at
+read-only sandbox), output is validated (a heading first, at least a quarter
+of the document's lines, and every real URL, hostname, environment variable
+and long id of the document still present), the previous file is kept at
 `<file>.bak`, and every failure falls through toward the deterministic
 merge. A recursion guard stops a synthesizer-spawned agent from re-entering
 agent-sync.
+
+## Keeping the file small
+
+The synthesized file is read into every session on every tool, so its size
+is paid on every turn, and the deterministic merge grows it by the full text
+of every memory store on every sync. `agent compact` keeps it under a byte
+budget (150 KB by default, `AGENT_SYNC_BUDGET` or `--budget` to change it):
+
+```sh
+agent compact             # exits at once while the file is within budget
+agent compact --dry-run   # the plan: which sections shrink, to what size
+agent compact --force     # compact anyway
+```
+
+When the file is over budget, each raw imported section is promoted into
+curated notes (`## Promoted from claude`) and its store files are archived
+to `~/.config/agent-sync/archive/` and removed, so the next sync has nothing
+to re-import. Then every curated section of 2 KB or more is rewritten
+shorter by the model, one section at a time. A rewrite may forget how a
+lesson was learned, items marked settled, refuted, muted or parked, one-off
+references (commit shas, PR numbers, run ids, past versions) and anything
+else of low value, but it is refused and the section kept unless it starts
+with the same heading, is at least a quarter of the original, and still
+contains every real URL, hostname, environment variable and long id the
+original had: those route traffic or unlock access and cannot be re-derived,
+while paths, commands and code words are asked for but may go with a story
+the rewrite forgets. A rewrite that
+drops one gets a second attempt naming what it lost. `--keep-all` forbids
+forgetting and protects every backtick span and bare letter-and-digit
+token. `sync` reports the size after every run; `status`
+and `doctor` fail while the file is over budget. `compact` needs a model and
+rejects `--synthesizer deterministic`.
 
 ## Automating
 
@@ -185,6 +219,14 @@ Cron staleness gate:
 
 ```sh
 0 9 * * * agent status || osascript -e 'display notification "agent memory is stale" with title "agent-sync"'
+```
+
+Size gate, weekly by cron or daily by launchd on macOS (`agent hooks launchd`
+prints the plist; the run costs a model call only when the file has grown
+past its budget):
+
+```sh
+0 9 * * 1 agent compact
 ```
 
 CI drift gate (fails the build when instructions drifted):

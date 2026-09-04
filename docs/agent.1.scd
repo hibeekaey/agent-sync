@@ -40,8 +40,29 @@ installed agent's global instructions slot.
 	agent-sync did not write would be overwritten, it is preserved beside
 	the target as <file>.orig.
 
+*compact* [--budget BYTES] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
+	Keep the synthesized file under a byte budget (default 150000, see
+	*AGENT_SYNC_BUDGET*). Exits at once while the file is within budget
+	unless *--force*. Otherwise each raw imported section is promoted into
+	curated notes under "## Promoted from AGENT" and its store files are
+	archived to ~/.config/agent-sync/archive/ and removed, so the next sync
+	has nothing to re-import; then every curated section of 2 KB or more is
+	rewritten shorter by the model, one section at a time. A rewrite may
+	forget how a lesson was learned, items marked settled, refuted, muted or
+	parked, one-off references (commit shas, PR numbers, run ids, past
+	versions) and anything else of low value; it is refused, and the section
+	kept, unless it starts with the same heading, is at least a quarter of
+	the original, and still contains every real URL, hostname, environment
+	variable and long id of the original (paths, commands and code words are
+	asked for but may go with a story the rewrite forgets). A rewrite that drops one gets a
+	second attempt naming what it lost. *--keep-all* forbids forgetting and
+	protects every backtick span and bare letter-and-digit token. Needs a
+	model: *deterministic* is rejected. The previous file is kept at
+	<file>.bak. Exits 1 when the file is still over budget afterwards.
+
 *status*
-	Per-agent parity check. Exits 1 when anything is stale (cron friendly).
+	Per-agent parity check. Exits 1 when anything is stale or the
+	synthesized file is over its byte budget (cron friendly).
 
 *diff*
 	Show stale targets as unified diffs. Exits 1 when anything is stale
@@ -105,8 +126,9 @@ installed agent's global instructions slot.
 
 *hooks* [TOOL]
 	Print verified automation snippets that keep memory fresh: Claude Code
-	SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
-	cron fallback. Printed, never installed.
+	SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, a macOS
+	launchd job that runs *compact* daily, and cron fallbacks. Printed,
+	never installed.
 
 # OPTIONS
 
@@ -140,6 +162,11 @@ installed agent's global instructions slot.
 	Synthesis mode (auto, claude, codex, deterministic) or a custom
 	command that reads a merge prompt on stdin and prints the merged
 	document on stdout.
+
+*AGENT_SYNC_BUDGET*
+	Byte budget for the synthesized file (default 150000). Reported by
+	sync, enforced by status and doctor, restored by *compact*; the
+	*--budget* flag of *compact* overrides it for one run.
 
 *AGENT_SYNC_ONLY*, *AGENT_SYNC_SKIP*
 	Comma-separated target filters used by sync, apply, status, diff, MCP sync

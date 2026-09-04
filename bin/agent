@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.6.2"
+VERSION="1.7.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -158,8 +158,19 @@ Usage:
   agent skills sync      additively synchronize the canonical skills directory
                          (default ~/.claude/skills) into every agent's
                          user-scope skills directory
+  agent compact [--budget BYTES] [--synthesizer MODE] [--force] [--keep-all]
+                [--dry-run]
+                         keep the synthesized file under a byte budget:
+                         promote raw imports into curated notes (archiving
+                         their stores) and rewrite oversized sections
+                         shorter, one at a time. A rewrite may forget how a
+                         lesson was learned, settled items and one-off
+                         references, but is refused if it drops a real URL,
+                         a hostname, an environment variable or a long id;
+                         --keep-all forbids forgetting and protects every
+                         backtick span and bare letter-and-digit token
   agent hooks [TOOL]     print verified automation snippets that keep memory
-                         fresh (claude, codex, gemini, opencode)
+                         fresh (claude, codex, gemini, opencode, launchd)
   agent help             this text
 
 Target filtering: --only LIST / --skip LIST flags (sync, apply) or the
@@ -186,6 +197,12 @@ Claude, then Codex, then keeps the deterministic merge. Select a mode with
 --synthesizer MODE or AGENT_SYNC_SYNTHESIZER. The environment variable also
 accepts a custom command that reads a merge prompt and prints the document:
   AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
+
+Size budget: the synthesized file is read into every session on every tool,
+so sync, status and doctor report its size against AGENT_SYNC_BUDGET
+(default $COMPACT_BUDGET_DEFAULT bytes) and agent compact brings it back under. compact
+needs a model (claude, codex or a custom command); it exits immediately
+while the file is within budget, so it is cheap to schedule.
 
 Tools are detected by their config directory; absent tools are skipped, so
 one binary serves every machine.
@@ -553,7 +570,10 @@ strip_synth_preamble() {
   cp "$PRIVATE_TMP/synth-trimmed" "$sp_out"
 }
 
-try_synthesizer() {
+# Run one model call: the prompt on stdin, the document on stdout. Shared by
+# the whole-document synthesis and by compact's per-section rewrites, so the
+# vendor flags live in exactly one place.
+invoke_synthesizer() {
   kind="$1"
   prompt="$2"
   out="$3"
@@ -574,9 +594,24 @@ try_synthesizer() {
         run_status=$?
       ;;
   esac
-  [ "$run_status" -eq 0 ] || return 1
+  [ "$run_status" -eq 0 ]
+}
+
+try_synthesizer() {
+  kind="$1"
+  prompt="$2"
+  out="$3"
+  invoke_synthesizer "$kind" "$prompt" "$out" || return 1
   strip_synth_preamble "$out"
-  valid_synth_output "$out" "$SRC"
+  valid_synth_output "$out" "$SRC" || return 1
+  ensure_private_tmp
+  identifier_source "$SRC" >"$PRIVATE_TMP/synth-ids"
+  ts_missing=$(missing_identifiers "$PRIVATE_TMP/synth-ids" "$out")
+  if [ -n "$ts_missing" ]; then
+    ts_count=$(printf '%s\n' "$ts_missing" | grep -c .)
+    echo "${C_ERR}agent:${C_OFF} synthesis dropped $ts_count identifier(s) the document carries, e.g. $(printf '%s\n' "$ts_missing" | head -3 | tr '\n' ' '); refusing to replace $SRC with it" >&2
+    return 1
+  fi
 }
 
 accept_synth_output() {
@@ -620,7 +655,9 @@ individual agents. Rewrite the whole document: fold the durable,
 non-duplicated facts from the imported sections into the curated sections,
 drop noise and duplicates, resolve conflicts in favor of the newest
 information, keep the document's structure and voice, and remove the
-imported sections you fold in. Print ONLY the new markdown document.
+imported sections you fold in.
+$(compact_keep_rules)
+Print ONLY the new markdown document.
 EOF
     echo
     echo '--- DOCUMENT ---'
@@ -654,6 +691,557 @@ EOF
       fi
       ;;
   esac
+}
+
+# ---- compaction ------------------------------------------------------------
+# The synthesized file is read into every session on every tool, so its size
+# is a cost paid on every turn, and the deterministic import grows it by the
+# full text of every store on every sync. `compact` keeps it under a byte
+# budget. Raw imported sections are promoted into curated notes and their
+# store files archived, so the next sync has nothing to re-import; oversized
+# curated sections are rewritten shorter by a model, one section at a time.
+# Every rewrite is gated: the heading must survive, the result must not be a
+# refusal-sized stub, and every name, path, URL, id and number of the original
+# must still appear, because a summary that loses an identifier has lost the
+# one thing an agent cannot re-derive.
+COMPACT_BUDGET_DEFAULT=150000
+COMPACT_HEADROOM_PERCENT=95    # aim below the budget so the next import fits
+COMPACT_MIN_SECTION_BYTES=2048 # smaller sections are not worth a model call
+COMPACT_MIN_RATIO_PERCENT=30   # never ask one pass to cut a section harder
+COMPACT_SECTION_FLOOR_PERCENT=25 # a rewrite smaller than this is a refusal
+COMPACT_IMPORT_FLOOR_PERCENT=8 # imports carry frontmatter and headers to drop
+COMPACT_OVERSHOOT_PERCENT=125  # accept a rewrite up to this far over target
+COMPACT_FORCE=0
+COMPACT_BUDGET=""
+# What a rewrite must keep. `stable` (the default) hard-protects only what
+# routes traffic or unlocks access and cannot be re-derived: real URLs and
+# hostnames, environment variable names, and long ids (tags, tables, streams,
+# accounts). Paths, commands and code words are asked for in the prompt but
+# may go with a story the rewrite forgets, as may one-off references (commit
+# shas, PR and issue numbers, past versions, dates). `strict` (--keep-all)
+# protects every backtick span and every bare letter-and-digit token, and
+# forbids forgetting.
+COMPACT_MODE=stable
+
+compact_budget() {
+  cb="${COMPACT_BUDGET:-${AGENT_SYNC_BUDGET:-$COMPACT_BUDGET_DEFAULT}}"
+  case "$cb" in
+    '' | *[!0-9]* | 0)
+      echo "${C_ERR}agent:${C_OFF} budget must be a positive number of bytes: $cb" >&2
+      return 2
+      ;;
+  esac
+  echo "$cb"
+}
+
+file_bytes() {
+  wc -c <"$1" | tr -d ' '
+}
+
+# One line on the synthesized file's size. Returns 1 when it is over budget.
+budget_report() {
+  br_budget=$(compact_budget) || return 2
+  br_bytes=$(file_bytes "$SRC")
+  if [ "$br_bytes" -gt "$br_budget" ]; then
+    echo "${C_WARN}synthesized file is $br_bytes bytes, over the $br_budget-byte budget; run: agent compact${C_OFF}"
+    return 1
+  fi
+  echo "${C_DIM}synthesized file: $br_bytes of $br_budget bytes${C_OFF}"
+}
+
+# Everything in a document an agent cannot re-derive: backtick spans, URLs,
+# and bare tokens that mix letters and digits (ids, versions, shas, keys).
+# Backticks are paired across the whole file, not per line, so a span broken
+# across two lines is one span and the prose between it and the next span is
+# not; each line of a multi-line span must survive on its own. A span carrying
+# an em dash is a pairing accident, not an identifier. A number glued to a
+# lowercase word (146-account, 429ing) is prose a rewrite may rephrase. Each
+# grep ends in `|| true`: the script runs under set -e, and a section with no
+# URL would otherwise abort the group before the bare tokens are read.
+extract_identifiers() {
+  ei_mode="${2:-$COMPACT_MODE}"
+  bt=$(printf '\140')
+  {
+    awk -v bt="$bt" '
+      { buf = buf $0 "\001" }
+      END {
+        # split() always breaks on newlines too, so they are masked first.
+        n = split(buf, seg, bt)
+        for (i = 2; i <= n; i += 2) {
+          m = split(seg[i], part, "\001")
+          for (j = 1; j <= m; j++) {
+            s = part[j]
+            gsub(/^[ \t]+/, "", s)
+            gsub(/[ \t]+$/, "", s)
+            if (length(s) > 0 && length(s) <= 200) print s
+          }
+        }
+      }
+    ' "$1" | grep -v ' — ' || true
+    grep -oE 'https?://[^] )>"`'"'"']+' "$1" || true
+    if [ "$ei_mode" = strict ]; then
+      grep -oE '[A-Za-z0-9][A-Za-z0-9._/:-]{5,}' "$1" | grep -E '[0-9]' | grep -E '[A-Za-z]' |
+        grep -vE '^[0-9]+-?[a-z]+$' || true
+    fi
+  } 2>/dev/null | sed 's/[.:/,;-]*$//' | awk 'length($0) > 0' | {
+    if [ "$ei_mode" = strict ]; then
+      cat
+    else
+      stable_identifiers_only
+    fi
+  } | LC_ALL=C sort -u
+}
+
+# The stable subset: URLs other than localhost and example hosts; hostnames
+# (a dotted lowercase name ending in a real TLD, so tokens.ts is not one);
+# UPPER_SNAKE names of two or more segments (environment variables); and ids
+# of eight or more characters mixing letters and digits with no space. One-off
+# references never count, whatever else they match: commit shas, PR and issue
+# numbers, version numbers, dates.
+stable_identifiers_only() {
+  grep -vE '^[0-9a-f]{6,40}$|^#?[0-9]+$|^v?[0-9]+(\.[0-9]+)+([-.][A-Za-z0-9]+)*$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$' |
+    awk '
+      /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|[a-z0-9.-]*example\.[a-z]+)([:\/]|$)/ { next }
+      /^https?:\/\// { print; next }
+      /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(io|com|org|net|app|dev|cloud|co|ai|me|ng|us|uk|de|fr|eu|sh|xyz|info|biz|tv|gg|so|to|ly)$/ { print; next }
+      /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/ { print; next }
+      length($0) >= 8 && /[0-9]/ && /[A-Za-z]/ && /^[A-Za-z0-9._@:+-]+$/ { print; next }
+    ' || true
+}
+
+# The text whose identifiers a rewrite must keep: the document minus the
+# import path headers and store frontmatter a merge is told to drop.
+identifier_source() {
+  awk '
+    /^### \// { next }
+    /^---$/ { fm = !fm; next }
+    !fm { print }
+  ' "$1"
+}
+
+# Print every identifier of $1 that $2 no longer contains.
+missing_identifiers() {
+  extract_identifiers "$1" "${3:-$COMPACT_MODE}" | while IFS= read -r mi_id; do
+    grep -qF -- "$mi_id" "$2" || printf '%s\n' "$mi_id"
+  done
+}
+
+# Split $SRC into $1/chunk-NNNN files: a head (before the first "## "), one
+# chunk per "## " section, and one chunk per marker-delimited import block
+# (markers included). $1/manifest lists "index|kind" in order.
+compact_split() {
+  cs_dir="$1"
+  awk -v dir="$cs_dir" '
+    function start(kind) {
+      if (n > 0) close(file)
+      n++
+      file = sprintf("%s/chunk-%04d", dir, n)
+      printf "" > file
+      kinds[n] = kind
+    }
+    BEGIN { n = 0; start("head"); inimport = 0 }
+    /^<!-- agent-sync:begin imported:/ {
+      from = $0
+      sub(/^<!-- agent-sync:begin imported:/, "", from)
+      sub(/ -->$/, "", from)
+      start("import:" from)
+      inimport = 1
+      print > file
+      next
+    }
+    /^<!-- agent-sync:end imported:/ {
+      print > file
+      inimport = 0
+      start("gap")
+      next
+    }
+    /^## / && !inimport { start("section"); print > file; next }
+    { print > file }
+    END {
+      close(file)
+      for (i = 1; i <= n; i++) print i "|" kinds[i]
+    }
+  ' "$SRC" >"$cs_dir/manifest"
+}
+
+# The keep/forget rules shared by every prompt, in the selected mode.
+compact_keep_rules() {
+  if [ "$COMPACT_MODE" = strict ]; then
+    cat <<'EOF'
+- Keep every rule, decision, owner ruling, fact, identifier, number, date,
+  version, path, URL, command and name. Anything inside backticks must
+  survive verbatim. Never paraphrase an identifier.
+- Remove repetition, narrative, anecdotes, and rationale that only restates
+  the rule. Keep a rationale only where the rule is not self-evident without
+  it. Merge duplicated points. Prefer tight bullets and tables.
+EOF
+    return
+  fi
+  cat <<'EOF'
+- Keep every CURRENT rule, decision and fact an agent needs to act on this
+  machine, and keep every hostname, URL, file path, command, environment
+  variable, account, tag, table and stream id, name and price exactly as
+  written. Anything inside backticks survives verbatim unless it is a commit
+  sha, a PR or issue number, a run id or a past version number.
+- You MAY forget, and should when it buys space: how a lesson was learned
+  (session narratives, dates of discovery, quoted remarks, counts of
+  corrections); items marked settled, refuted, muted, parked or "do not
+  re-raise" (drop them entirely); one-off references (commit shas, PR and
+  issue numbers, run ids, superseded versions); and anything else you judge
+  of low value to an agent doing this work in future. Never soften or
+  generalise a rule that stays.
+- Merge duplicated points. Prefer tight bullets and tables.
+EOF
+}
+
+compact_section_prompt() {
+  cat <<EOF
+You are compacting one section of the memory file that agent-sync
+distributes to every AI coding agent on this machine. The section below is
+$2 bytes; rewrite it to at most $3 bytes.
+
+Rules:
+- The first line is the heading. Keep it exactly as it is.
+$(compact_keep_rules)
+- Do not add anything.
+- Print ONLY the rewritten markdown section, starting with the heading.
+EOF
+  if [ -n "$4" ]; then
+    echo
+    echo "Your previous attempt was $4 bytes, which is too long. It must be at most $3 bytes."
+  fi
+  if [ -n "$5" ]; then
+    echo
+    echo "Your previous attempt dropped the following, each of which must appear verbatim in the rewrite:"
+    printf '%s\n' "$5" | sed 's/^/- /'
+  fi
+  echo
+  echo '--- SECTION ---'
+  cat "$1"
+}
+
+compact_import_prompt() {
+  cat <<EOF
+You are compacting the memory file that agent-sync distributes to every AI
+coding agent on this machine. The section below is a raw import of the
+memory store files of one agent ($4), copied verbatim, $2 bytes in total.
+Turn it into curated notes of at most $3 bytes.
+
+Rules:
+- The first line of your output must be exactly: ## Promoted from $4 ($5)
+$(compact_keep_rules)
+- Drop the file path headers, YAML frontmatter, session ids, "Related" link
+  lists, index lists, and anything that only narrates how a session went.
+- Do not add anything.
+- Print ONLY the markdown, starting with the heading.
+EOF
+  if [ -n "$6" ]; then
+    echo
+    echo "Your previous attempt was $6 bytes, which is too long. It must be at most $3 bytes."
+  fi
+  if [ -n "$7" ]; then
+    echo
+    echo "Your previous attempt dropped the following, each of which must appear verbatim in the rewrite:"
+    printf '%s\n' "$7" | sed 's/^/- /'
+  fi
+  echo
+  echo '--- SECTION ---'
+  cat "$1"
+}
+
+# Run the model on a chunk, up to twice, and validate the result.
+#   $1 chunk file  $2 result file  $3 target bytes  $4 floor percent
+#   $5 heading the first line must start with  $6 kind (section|import)
+#   $7 identifier source (the text whose identifiers must survive)
+#   $8 agent name for imports  $9 date for imports
+# Prints the reason on stderr and returns 1 when the rewrite is refused.
+compact_rewrite() {
+  cr_chunk="$1" cr_out="$2" cr_target="$3" cr_floor="$4" cr_head="$5"
+  cr_kind="$6" cr_ids="$7" cr_from="$8" cr_date="$9"
+  cr_in=$(file_bytes "$cr_chunk")
+  cr_prompt="$PRIVATE_TMP/compact-prompt"
+  cr_prev=""
+  cr_dropped=""
+  cr_attempt=0
+  while [ "$cr_attempt" -lt 2 ]; do
+    cr_attempt=$((cr_attempt + 1))
+    if [ "$cr_kind" = import ]; then
+      compact_import_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_from" "$cr_date" "$cr_prev" "$cr_dropped" >"$cr_prompt"
+    else
+      compact_section_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_prev" "$cr_dropped" >"$cr_prompt"
+    fi
+    if ! invoke_synthesizer "$COMPACT_KIND" "$cr_prompt" "$cr_out"; then
+      echo "the synthesizer failed" >&2
+      return 1
+    fi
+    strip_synth_preamble "$cr_out"
+    [ -s "$cr_out" ] || {
+      echo "the synthesizer returned nothing" >&2
+      return 1
+    }
+    case "$(head -1 "$cr_out")" in
+      "$cr_head"*) ;;
+      *)
+        echo "the rewrite does not start with the heading" >&2
+        return 1
+        ;;
+    esac
+    cr_bytes=$(file_bytes "$cr_out")
+    if [ $((cr_bytes * 100)) -lt $((cr_in * cr_floor)) ]; then
+      echo "the rewrite is $cr_bytes bytes from $cr_in, below the ${cr_floor}% floor (a refusal, not a rewrite)" >&2
+      return 1
+    fi
+    cr_missing=$(missing_identifiers "$cr_ids" "$cr_out")
+    if [ -n "$cr_missing" ]; then
+      # One more attempt, told exactly what it lost; a second drop is final.
+      if [ "$cr_attempt" -lt 2 ]; then
+        cr_dropped="$cr_missing"
+        continue
+      fi
+      echo "the rewrite dropped: $(printf '%s' "$cr_missing" | tr '\n' ' ')" >&2
+      return 1
+    fi
+    if [ "$cr_bytes" -ge "$cr_in" ]; then
+      echo "the rewrite is $cr_bytes bytes, no smaller than the original" >&2
+      return 1
+    fi
+    if [ $((cr_bytes * 100)) -le $((cr_target * COMPACT_OVERSHOOT_PERCENT)) ]; then
+      return 0
+    fi
+    cr_prev="$cr_bytes"
+  done
+  if [ "$cr_bytes" -lt "$cr_in" ]; then
+    echo "${C_DIM}(accepted $cr_bytes bytes against a $cr_target-byte target after two attempts)${C_OFF}"
+    return 0
+  fi
+  echo "the rewrite is $cr_bytes bytes, no smaller than the original" >&2
+  return 1
+}
+
+# Move one agent's store files into a dated tarball under the state dir and
+# remove them, but only once the tarball lists every file it was given.
+archive_stores() {
+  as_from="$1"
+  as_list="$PRIVATE_TMP/archive-list-$as_from"
+  sources_for "$as_from" >"$as_list"
+  as_count=$(grep -c . "$as_list" || true)
+  [ "$as_count" -gt 0 ] || return 0
+  mkdir -p "$STATE_DIR/archive"
+  as_tar="$STATE_DIR/archive/stores-$as_from-$(date +%Y%m%d-%H%M%S).tar"
+  : >"$as_tar"
+  as_first=1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ "$as_first" -eq 1 ]; then
+      tar cf "$as_tar" -C / "${f#/}" || return 1
+      as_first=0
+    else
+      tar rf "$as_tar" -C / "${f#/}" || return 1
+    fi
+  done <"$as_list"
+  as_in_tar=$(tar tf "$as_tar" | grep -c . || true)
+  if [ "$as_in_tar" -ne "$as_count" ]; then
+    echo "${C_ERR}agent:${C_OFF} archive lists $as_in_tar of $as_count store file(s); leaving the stores of $as_from in place" >&2
+    return 1
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rm -f "$f"
+  done <"$as_list"
+  if command -v gzip >/dev/null 2>&1 && gzip -f "$as_tar"; then
+    as_tar="$as_tar.gz"
+  fi
+  echo "$as_from: ${C_DIM}archived $as_count store file(s) to ${C_PATH}$as_tar${C_OFF}"
+}
+
+cmd_compact() {
+  SYNTHESIZER_REQUEST="${AGENT_SYNC_SYNTHESIZER:-auto}"
+  SYNTHESIZER_FROM_CLI=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --budget | --synthesizer | --only | --skip)
+        opt="$1"
+        if [ "$#" -lt 2 ]; then
+          echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
+          return 2
+        fi
+        case "$opt" in
+          --budget) COMPACT_BUDGET="$2" ;;
+          --synthesizer)
+            SYNTHESIZER_REQUEST="$2"
+            SYNTHESIZER_FROM_CLI=1
+            ;;
+          --only) TARGET_ONLY="$2" ;;
+          --skip) TARGET_SKIP="$2" ;;
+        esac
+        shift 2
+        ;;
+      --budget=*) COMPACT_BUDGET=${1#*=}; shift ;;
+      --synthesizer=*)
+        SYNTHESIZER_REQUEST=${1#*=}
+        SYNTHESIZER_FROM_CLI=1
+        shift
+        ;;
+      --only=*) TARGET_ONLY=${1#*=}; shift ;;
+      --skip=*) TARGET_SKIP=${1#*=}; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --force) COMPACT_FORCE=1; shift ;;
+      --keep-all) COMPACT_MODE=strict; shift ;;
+      *)
+        echo "${C_ERR}agent:${C_OFF} unknown compact option: $1" >&2
+        return 2
+        ;;
+    esac
+  done
+  validate_synthesizer_request || return 2
+  require_src
+  budget=$(compact_budget) || return 2
+  if [ "$SYNTHESIZER_REQUEST" = deterministic ]; then
+    echo "${C_ERR}agent:${C_OFF} compact needs a model synthesizer (claude, codex or a custom command); the deterministic merge cannot summarize" >&2
+    return 2
+  fi
+  require_selected_synthesizer
+  case "$SYNTHESIZER_REQUEST" in
+    auto)
+      COMPACT_KIND=""
+      for kind in claude codex; do
+        command -v "$kind" >/dev/null 2>&1 || continue
+        COMPACT_KIND="$kind"
+        break
+      done
+      if [ -z "$COMPACT_KIND" ]; then
+        echo "${C_ERR}agent:${C_OFF} no synthesizer available: install claude or codex, or set AGENT_SYNC_SYNTHESIZER to a command" >&2
+        return 2
+      fi
+      ;;
+    claude | codex) COMPACT_KIND="$SYNTHESIZER_REQUEST" ;;
+    *) COMPACT_KIND=custom ;;
+  esac
+  for name in claude codex cursor continue windsurf goose; do
+    validate_import_section "$name" || return 1
+  done
+  total=$(file_bytes "$SRC")
+  if [ "$total" -le "$budget" ] && [ "$COMPACT_FORCE" -eq 0 ]; then
+    echo "compact: ${C_OK}$total of $budget bytes, within budget; nothing to do${C_OFF} ${C_DIM}(--force compacts anyway)${C_OFF}"
+    return 0
+  fi
+  ensure_private_tmp
+  cdir="$PRIVATE_TMP/compact"
+  rm -rf "$cdir"
+  mkdir -p "$cdir"
+  compact_split "$cdir"
+  goal=$((budget * COMPACT_HEADROOM_PERCENT / 100))
+  [ "$total" -gt "$goal" ] || goal=$((total * 75 / 100))
+  # What can shrink: agent imports (promoted) and sections worth a call.
+  compressible=0
+  while IFS='|' read -r idx kind; do
+    chunk="$cdir/chunk-$(printf '%04d' "$idx")"
+    bytes=$(file_bytes "$chunk")
+    case "$kind" in
+      import:pack:*) ;;
+      import:*) compressible=$((compressible + bytes)) ;;
+      section) [ "$bytes" -ge "$COMPACT_MIN_SECTION_BYTES" ] && compressible=$((compressible + bytes)) ;;
+    esac
+  done <"$cdir/manifest"
+  if [ "$compressible" -eq 0 ]; then
+    echo "${C_ERR}agent:${C_OFF} nothing to compact: no agent imports and no section of $COMPACT_MIN_SECTION_BYTES bytes or more" >&2
+    return 1
+  fi
+  need=$((total - goal))
+  ratio=$(((compressible - need) * 100 / compressible))
+  [ "$ratio" -ge "$COMPACT_MIN_RATIO_PERCENT" ] || ratio="$COMPACT_MIN_RATIO_PERCENT"
+  [ "$ratio" -lt 100 ] || ratio=99
+  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; rewriting compressible sections to ${ratio}% via ${C_PLAN}$COMPACT_KIND${C_OFF} ${C_DIM}(mode: $COMPACT_MODE)${C_OFF}"
+  today=$(date +%Y-%m-%d)
+  promoted=""
+  refused=0
+  while IFS='|' read -r idx kind; do
+    chunk="$cdir/chunk-$(printf '%04d' "$idx")"
+    bytes=$(file_bytes "$chunk")
+    out="$chunk.new"
+    case "$kind" in
+      import:pack:*) ;;
+      import:*)
+        from=${kind#import:}
+        inner="$chunk.inner"
+        # The model sees the import without its markers; the identifier
+        # check ignores the path headers and frontmatter it is told to drop.
+        sed '1d;$d' "$chunk" >"$inner"
+        ids="$chunk.ids"
+        identifier_source "$inner" >"$ids"
+        target=$((bytes * ratio / 100))
+        if [ "$DRY_RUN" -eq 1 ]; then
+          echo "${C_PLAN}dry-run:${C_OFF} would promote import:$from ($bytes bytes) to about $target and archive its stores"
+          continue
+        fi
+        printf 'import:%s: %s -> ' "$from" "$bytes"
+        if reason=$(compact_rewrite "$inner" "$out" "$target" "$COMPACT_IMPORT_FLOOR_PERCENT" "## Promoted from $from" import "$ids" "$from" "$today" 2>&1 >/dev/null); then
+          echo "${C_OK}$(file_bytes "$out") bytes${C_OFF} ${C_DIM}(promoted)${C_OFF}"
+          promoted="$promoted $from"
+        else
+          echo "${C_WARN}kept${C_OFF} ${C_DIM}($reason)${C_OFF}"
+          rm -f "$out"
+          refused=$((refused + 1))
+        fi
+        ;;
+      section)
+        [ "$bytes" -ge "$COMPACT_MIN_SECTION_BYTES" ] || continue
+        heading=$(head -1 "$chunk")
+        target=$((bytes * ratio / 100))
+        if [ "$DRY_RUN" -eq 1 ]; then
+          echo "${C_PLAN}dry-run:${C_OFF} would rewrite \"$heading\" ($bytes bytes) to about $target"
+          continue
+        fi
+        printf '%s: %s -> ' "$heading" "$bytes"
+        if reason=$(compact_rewrite "$chunk" "$out" "$target" "$COMPACT_SECTION_FLOOR_PERCENT" "$heading" section "$chunk" "" "" 2>&1 >/dev/null); then
+          echo "${C_OK}$(file_bytes "$out") bytes${C_OFF}"
+        else
+          echo "${C_WARN}kept${C_OFF} ${C_DIM}($reason)${C_OFF}"
+          rm -f "$out"
+          refused=$((refused + 1))
+        fi
+        ;;
+    esac
+  done <"$cdir/manifest"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "${C_PLAN}dry-run: no model was called and nothing was written${C_OFF}"
+    return 0
+  fi
+  CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
+    echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $SRC" >&2
+    exit 1
+  }
+  while IFS='|' read -r idx kind; do
+    chunk="$cdir/chunk-$(printf '%04d' "$idx")"
+    if [ -f "$chunk.new" ]; then
+      case "$kind" in
+        import:*)
+          # A promoted import becomes a plain section: blank line, notes,
+          # blank line, no markers, so the next sync has nothing to refresh.
+          echo
+          cat "$chunk.new"
+          echo
+          ;;
+        *) cat "$chunk.new" ;;
+      esac
+    else
+      cat "$chunk"
+    fi
+  done <"$cdir/manifest" >"$CANON_TMP"
+  cp "$SRC" "$SRC.bak"
+  mv "$CANON_TMP" "$SRC"
+  CANON_TMP=""
+  for from in $promoted; do
+    archive_stores "$from" || echo "${C_WARN}the stores of $from were not archived; the next sync will re-import them${C_OFF}"
+  done
+  distribute
+  final=$(file_bytes "$SRC")
+  echo "compact: ${C_BOLD}$total -> $final bytes${C_OFF} ${C_DIM}(previous file at $SRC.bak)${C_OFF}"
+  [ "$refused" -eq 0 ] || echo "${C_WARN}$refused section(s) kept as they were; see the reasons above${C_OFF}"
+  if [ "$final" -gt "$budget" ]; then
+    echo "${C_WARN}still $((final - budget)) bytes over the $budget-byte budget; run agent compact again${C_OFF}"
+    return 1
+  fi
 }
 
 distribute() {
@@ -750,6 +1338,7 @@ sync_after_options() {
   done
   synthesize
   distribute
+  budget_report || true
 }
 
 cmd_status() {
@@ -785,10 +1374,13 @@ cmd_status() {
   done <<EOF
 $(targets)
 EOF
+  over=0
+  budget_report || over=1
   [ "$fails" -eq 0 ] || {
     echo "${C_WARN}$fails target(s) stale; run: agent sync${C_OFF}"
     exit 1
   }
+  [ "$over" -eq 0 ] || exit 1
 }
 
 cmd_targets() {
@@ -1102,6 +1694,10 @@ EOF
     fi
   done
   [ -f "$SRC.bak" ] && echo "${C_DIM}note: last synthesis backup at $SRC.bak${C_OFF}"
+  if [ -f "$SRC" ] && ! budget_report >/dev/null 2>&1; then
+    echo "${C_ERR}PROBLEM:${C_OFF} synthesized file is $(file_bytes "$SRC") bytes, over the $(compact_budget)-byte budget (agent compact fixes)"
+    problems=$((problems + 1))
+  fi
   if [ -f "$SRC" ] && ! (cmd_status) >/dev/null 2>&1; then
     echo "${C_ERR}PROBLEM:${C_OFF} targets are stale (agent diff shows details; agent sync fixes)"
     problems=$((problems + 1))
@@ -2163,16 +2759,42 @@ EOF
       ;;
   esac
   case "$tool" in
+    launchd | all)
+      cat <<'EOF'
+
+# macOS launchd (~/Library/LaunchAgents/io.agent-sync.compact.plist): keep the
+# synthesized file under its byte budget. agent compact exits at once while
+# the file is within budget, so a daily run costs a model call only after it
+# has grown past it. Load with:
+#   launchctl load ~/Library/LaunchAgents/io.agent-sync.compact.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>io.agent-sync.compact</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/sh</string><string>-lc</string><string>agent compact</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/tmp/agent-sync-compact.log</string>
+  <key>StandardErrorPath</key><string>/tmp/agent-sync-compact.log</string>
+</dict></plist>
+EOF
+      ;;
+  esac
+  case "$tool" in
     all)
       cat <<'EOF'
 
-# Everything else (no hook mechanism): cron staleness gate
+# Everything else (no hook mechanism): cron staleness and size gates
 # 0 9 * * * agent status || agent sync --synthesizer deterministic
+# 0 9 * * 1 agent compact
 EOF
       ;;
-    claude | codex | gemini | opencode) ;;
+    claude | codex | gemini | opencode | launchd) ;;
     *)
-      echo "${C_WARN}usage:${C_OFF} agent hooks [claude|codex|gemini|opencode]" >&2
+      echo "${C_WARN}usage:${C_OFF} agent hooks [claude|codex|gemini|opencode|launchd]" >&2
       exit 2
       ;;
   esac
@@ -2219,6 +2841,10 @@ case "${1:-help}" in
     cmd_sync "$@"
     ;;
   status) cmd_status ;;
+  compact)
+    shift
+    cmd_compact "$@"
+    ;;
   diff) cmd_diff ;;
   doctor) cmd_doctor ;;
   revert) cmd_revert ;;

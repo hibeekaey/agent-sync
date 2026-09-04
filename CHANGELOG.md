@@ -4,6 +4,50 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-09-03
+
+### Added
+
+- `agent compact` keeps the synthesized file under a byte budget
+  (`AGENT_SYNC_BUDGET`, default 150000, or `--budget`). The deterministic
+  merge re-imports every memory store verbatim on every sync, so a file that
+  started at 900 curated lines had reached 4,900 with 82% of it raw imports,
+  and the curated part alone stood at 195 KB against a 150 KB ceiling. When
+  over budget, compact promotes each raw imported section into curated notes
+  and archives its store files to `~/.config/agent-sync/archive/`, so the
+  next sync has nothing to re-import; then it rewrites every curated section
+  of 2 KB or more shorter with the model, one section at a time. A rewrite
+  is refused and the section kept unless it starts with the same heading, is
+  at least a quarter of the original, and still contains every backtick
+  span, URL and letter-and-digit token the original had. The command exits at
+  once while the file is within budget, so it is cheap to schedule, and it
+  rejects `--synthesizer deterministic` because a merge cannot summarize. A
+  rewrite that drops identifiers gets one more attempt that names exactly what
+  it lost; a second drop keeps the section as it was. By default a rewrite may
+  forget how a lesson was learned, items marked settled, refuted, muted or
+  parked, one-off references (commit shas, PR numbers, run ids, past
+  versions) and anything else of low value, while every real URL, hostname,
+  environment variable and long id must survive (paths, commands and code
+  words are asked for but may go with a story the rewrite forgets, which is
+  where they mostly sat); `--keep-all` forbids forgetting and
+  protects every backtick span and bare letter-and-digit token. Four strict
+  passes on a 195 KB file stalled at 164 KB because the text had reached the
+  floor that keeping every token allows.
+- `sync` reports the file's size against the budget after every run;
+  `status` and `doctor` fail while it is over budget.
+- The whole-document semantic synthesis is now held to the same identifier
+  guard: a merge that no longer contains every backtick span, URL and
+  letter-and-digit token of the document is refused and the deterministic
+  merge kept. The size floor alone let a merge through that had summarised
+  away 919 of a 195 KB document's 1,116 identifiers while keeping 43% of its
+  lines. The merge prompt also now asks for identifiers to survive verbatim.
+  The guard was falsified against a real run: a section without a URL was
+  unguarded because the script's `set -e` aborted the extractor at the URL
+  grep, and a two-line backtick span produced a phantom identifier; both are
+  pinned by tests.
+- `agent hooks launchd` prints a macOS LaunchAgent that runs `agent compact`
+  daily; the cron fallback gains a weekly compact line.
+
 ## [1.6.2] - 2026-08-17
 
 ### Fixed

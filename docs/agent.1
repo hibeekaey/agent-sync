@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "agent" "1" "2026\-08\-17"
+.TH "agent" "1" "2026\-09\-04"
 .PP
 .SH NAME
 .PP
@@ -62,9 +62,32 @@ agent\-sync did not write would be overwritten, it is preserved beside
 the target as <file>.\&orig.\&
 .PP
 .RE
+\fBcompact\fR [\-\-budget BYTES] [\-\-synthesizer MODE] [\-\-force] [\-\-keep\-all] [\-\-dry\-run]
+.RS 4
+Keep the synthesized file under a byte budget (default 150000, see
+\fBAGENT_SYNC_BUDGET\fR).\& Exits at once while the file is within budget
+unless \fB\-\-force\fR.\& Otherwise each raw imported section is promoted into
+curated notes under "## Promoted from AGENT" and its store files are
+archived to \(ti/.\&config/agent\-sync/archive/ and removed, so the next sync
+has nothing to re\-import; then every curated section of 2 KB or more is
+rewritten shorter by the model, one section at a time.\& A rewrite may
+forget how a lesson was learned, items marked settled, refuted, muted or
+parked, one\-off references (commit shas, PR numbers, run ids, past
+versions) and anything else of low value; it is refused, and the section
+kept, unless it starts with the same heading, is at least a quarter of
+the original, and still contains every real URL, hostname, environment
+variable and long id of the original (paths, commands and code words are
+asked for but may go with a story the rewrite forgets).\& A rewrite that drops one gets a
+second attempt naming what it lost.\& \fB\-\-keep\-all\fR forbids forgetting and
+protects every backtick span and bare letter\-and\-digit token.\& Needs a
+model: \fBdeterministic\fR is rejected.\& The previous file is kept at
+<file>.\&bak.\& Exits 1 when the file is still over budget afterwards.\&
+.PP
+.RE
 \fBstatus\fR
 .RS 4
-Per\-agent parity check.\& Exits 1 when anything is stale (cron friendly).\&
+Per\-agent parity check.\& Exits 1 when anything is stale or the
+synthesized file is over its byte budget (cron friendly).\&
 .PP
 .RE
 \fBdiff\fR
@@ -152,8 +175,9 @@ left untouched and make the command exit nonzero.\&
 \fBhooks\fR [TOOL]
 .RS 4
 Print verified automation snippets that keep memory fresh: Claude Code
-SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, and a
-cron fallback.\& Printed, never installed.\&
+SessionEnd, Codex Stop, Gemini AfterAgent, an OpenCode plugin, a macOS
+launchd job that runs \fBcompact\fR daily, and cron fallbacks.\& Printed,
+never installed.\&
 .PP
 .RE
 .SH OPTIONS
@@ -199,6 +223,13 @@ Agent configuration root (default $HOME).\& Used by the test suite.\&
 Synthesis mode (auto, claude, codex, deterministic) or a custom
 command that reads a merge prompt on stdin and prints the merged
 document on stdout.\&
+.PP
+.RE
+\fBAGENT_SYNC_BUDGET\fR
+.RS 4
+Byte budget for the synthesized file (default 150000).\& Reported by
+sync, enforced by status and doctor, restored by \fBcompact\fR; the
+\fB\-\-budget\fR flag of \fBcompact\fR overrides it for one run.\&
 .PP
 .RE
 \fBAGENT_SYNC_ONLY\fR, \fBAGENT_SYNC_SKIP\fR
