@@ -204,13 +204,18 @@ Claude, then Codex, then keeps the deterministic merge. Select a mode with
 --synthesizer MODE or AGENT_SYNC_SYNTHESIZER. The environment variable also
 accepts a custom command that reads a merge prompt and prints the document:
   AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
-A synthesis is the model rewriting the whole file, so it takes minutes and
-runs fastest on a fast model at low effort; AGENT_SYNC_CLAUDE_MODEL,
-AGENT_SYNC_CLAUDE_EFFORT, AGENT_SYNC_CODEX_MODEL and AGENT_SYNC_CODEX_EFFORT
-pass --model/--effort (Claude) and -m/-c model_reasoning_effort (Codex).
-While it runs a dot lands on stderr every AGENT_SYNC_SYNTH_HEARTBEAT seconds
-(30 on a terminal, off otherwise), and AGENT_SYNC_SYNTH_TIMEOUT seconds
-(default $SYNTH_TIMEOUT_DEFAULT, 0 for none) stops a stuck model so the fallback runs.
+The script decides the model, so a sync behaves the same on every machine:
+Claude tries $SYNTH_CLAUDE_MODELS_DEFAULT at effort $SYNTH_CLAUDE_EFFORT_DEFAULT, then Codex tries
+$SYNTH_CODEX_MODELS_DEFAULT at effort $SYNTH_CODEX_EFFORT_DEFAULT; a model that is out of
+credits, unavailable or answers badly hands over to the next, and the
+deterministic merge is the last resort. Change any of it for one run with
+--claude-model LIST, --claude-effort LEVEL, --codex-model LIST and
+--codex-effort LEVEL (sync, apply, compact), or standing via
+AGENT_SYNC_CLAUDE_MODEL, AGENT_SYNC_CLAUDE_EFFORT, AGENT_SYNC_CODEX_MODEL and
+AGENT_SYNC_CODEX_EFFORT. A synthesis is the model rewriting the whole file
+and takes minutes: a dot lands on stderr every AGENT_SYNC_SYNTH_HEARTBEAT
+seconds (30 on a terminal, off otherwise) and AGENT_SYNC_SYNTH_TIMEOUT
+seconds (default $SYNTH_TIMEOUT_DEFAULT, 0 for none) stops a stuck model so the next one runs.
 One sync writes at a time: a second run started while one holds
 $STATE_DIR/sync.lock exits 1.
 
@@ -500,6 +505,18 @@ parse_synthesizer_args() {
         SYNTHESIZER_REQUEST=${1#*=}
         SYNTHESIZER_FROM_CLI=1
         ;;
+      --claude-model | --claude-effort | --codex-model | --codex-effort)
+        opt="$1"
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
+          return 2
+        fi
+        set_synth_opt "$opt" "$1" || return 2
+        ;;
+      --claude-model=* | --claude-effort=* | --codex-model=* | --codex-effort=*)
+        set_synth_opt "${1%%=*}" "${1#*=}" || return 2
+        ;;
       --dry-run)
         DRY_RUN=1
         ;;
@@ -602,26 +619,74 @@ strip_synth_preamble() {
   mv "$sp_out.trimmed" "$sp_out"
 }
 
-# The vendor command lines live in exactly one place. Model and effort are
-# opt-in (AGENT_SYNC_CLAUDE_MODEL / AGENT_SYNC_CLAUDE_EFFORT for Claude,
-# AGENT_SYNC_CODEX_MODEL / AGENT_SYNC_CODEX_EFFORT for Codex): a synthesis is
-# mostly the model copying the document back out, so a faster model at low
-# effort finishes in a fraction of the time the vendor default takes. Unset,
-# each CLI uses its own configured default, as before.
+# The script decides the model, so a sync behaves the same on every machine
+# whatever each CLI is set to interactively. Each vendor has a ladder of
+# models: when a rung is unavailable (out of credits, rate-limited, unknown
+# model, any error) or its output fails the guard, the next rung is tried,
+# then the next vendor, then the deterministic merge. Measured on a 148 KB
+# file: Fable at low effort re-emits it faithfully in about ten minutes;
+# Opus, Sonnet and Haiku dropped identifiers the guard protects and were
+# refused, so they are fallbacks, not the first choice. Effort is low on
+# purpose: the work is copying the document back out, and higher effort once
+# returned a fragment. A flag or environment variable overrides each value:
+# --claude-model / AGENT_SYNC_CLAUDE_MODEL (comma-separated ladder),
+# --claude-effort / AGENT_SYNC_CLAUDE_EFFORT, --codex-model /
+# AGENT_SYNC_CODEX_MODEL, --codex-effort / AGENT_SYNC_CODEX_EFFORT.
+SYNTH_CLAUDE_MODELS_DEFAULT="fable,opus,sonnet"
+SYNTH_CLAUDE_EFFORT_DEFAULT=low
+SYNTH_CODEX_MODELS_DEFAULT="gpt-5.6-terra,gpt-5.5,gpt-5.4"
+SYNTH_CODEX_EFFORT_DEFAULT=low
+CLAUDE_MODELS_OPT=""
+CLAUDE_EFFORT_OPT=""
+CODEX_MODELS_OPT=""
+CODEX_EFFORT_OPT=""
+
+set_synth_opt() {
+  if [ -z "$2" ]; then
+    echo "${C_ERR}agent:${C_OFF} $1 requires a value" >&2
+    return 2
+  fi
+  case "$1" in
+    --claude-model) CLAUDE_MODELS_OPT="$2" ;;
+    --claude-effort) CLAUDE_EFFORT_OPT="$2" ;;
+    --codex-model) CODEX_MODELS_OPT="$2" ;;
+    --codex-effort) CODEX_EFFORT_OPT="$2" ;;
+  esac
+}
+
+# Flag, then environment, then the script's default; the ladder is printed
+# one model per line in the order it is tried.
+synth_models() {
+  case "$1" in
+    claude) sm_list="${CLAUDE_MODELS_OPT:-${AGENT_SYNC_CLAUDE_MODEL:-$SYNTH_CLAUDE_MODELS_DEFAULT}}" ;;
+    codex) sm_list="${CODEX_MODELS_OPT:-${AGENT_SYNC_CODEX_MODEL:-$SYNTH_CODEX_MODELS_DEFAULT}}" ;;
+    *) sm_list="" ;;
+  esac
+  printf '%s\n' "$sm_list" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true
+}
+
+synth_effort() {
+  case "$1" in
+    claude) printf '%s' "${CLAUDE_EFFORT_OPT:-${AGENT_SYNC_CLAUDE_EFFORT:-$SYNTH_CLAUDE_EFFORT_DEFAULT}}" ;;
+    codex) printf '%s' "${CODEX_EFFORT_OPT:-${AGENT_SYNC_CODEX_EFFORT:-$SYNTH_CODEX_EFFORT_DEFAULT}}" ;;
+  esac
+}
+
+# The vendor command lines live in exactly one place. Each vendor runs with
+# its MCP servers switched off: a synthesis needs no tools, and a server that
+# is slow, broken or asking for a login on the user's side must not be able
+# to slow or break the rewrite.
 synth_command() {
   export AGENT_SYNC_ACTIVE=1
   case "$1" in
     claude)
-      set -- claude -p --no-session-persistence --permission-mode dontAsk
-      [ -z "${AGENT_SYNC_CLAUDE_MODEL:-}" ] || set -- "$@" --model "$AGENT_SYNC_CLAUDE_MODEL"
-      [ -z "${AGENT_SYNC_CLAUDE_EFFORT:-}" ] || set -- "$@" --effort "$AGENT_SYNC_CLAUDE_EFFORT"
-      exec "$@"
+      exec claude -p --no-session-persistence --permission-mode dontAsk \
+        --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+        --model "$2" --effort "$(synth_effort claude)"
       ;;
     codex)
-      set -- codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never
-      [ -z "${AGENT_SYNC_CODEX_MODEL:-}" ] || set -- "$@" -m "$AGENT_SYNC_CODEX_MODEL"
-      [ -z "${AGENT_SYNC_CODEX_EFFORT:-}" ] || set -- "$@" -c "model_reasoning_effort=$AGENT_SYNC_CODEX_EFFORT"
-      exec "$@" -
+      exec codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never \
+        -c 'mcp_servers={}' -m "$2" -c "model_reasoning_effort=$(synth_effort codex)" -
       ;;
     custom)
       exec sh -c "$SYNTHESIZER_REQUEST"
@@ -662,17 +727,27 @@ synth_heartbeat() {
   fi
 }
 
-# Run one model call: the prompt on stdin, the document on stdout. Shared by
-# the whole-document synthesis and by compact's per-section rewrites. The
-# vendor runs in the background so this shell can beat and stop the clock.
+# Run one model call: the prompt on stdin, the document on stdout, the
+# vendor's own stderr captured beside it so a failure can be explained in one
+# line instead of a wall of vendor logging. Shared by the whole-document
+# synthesis and by compact's per-section rewrites. The vendor runs in the
+# background so this shell can beat and stop the clock. Leaves the elapsed
+# seconds in SYNTH_ELAPSED and, on failure, the vendor's last words in
+# SYNTH_FAIL_REASON.
+SYNTH_ELAPSED=0
+SYNTH_FAIL_REASON=""
+
 invoke_synthesizer() {
   kind="$1"
   prompt="$2"
   out="$3"
+  is_model="${4:-}"
   : >"$out"
+  : >"$out.err"
+  SYNTH_FAIL_REASON=""
   is_timeout=$(synth_timeout)
   is_beat=$(synth_heartbeat)
-  synth_command "$kind" <"$prompt" >"$out" &
+  synth_command "$kind" "$is_model" <"$prompt" >"$out" 2>"$out.err" &
   is_pid=$!
   is_waited=0
   is_since_beat=0
@@ -687,7 +762,9 @@ invoke_synthesizer() {
       kill -9 "$is_pid" 2>/dev/null || true
       wait "$is_pid" 2>/dev/null || true
       [ "$is_beats" -eq 0 ] || echo >&2
-      echo "${C_ERR}agent:${C_OFF} $kind synthesis ran past ${is_timeout}s and was stopped (AGENT_SYNC_SYNTH_TIMEOUT)" >&2
+      SYNTH_ELAPSED="$is_waited"
+      SYNTH_FAIL_REASON="ran past ${is_timeout}s and was stopped (AGENT_SYNC_SYNTH_TIMEOUT)"
+      echo "${C_ERR}agent:${C_OFF} $kind${is_model:+ $is_model} synthesis $SYNTH_FAIL_REASON" >&2
       return 1
     fi
     if [ "$is_beat" -gt 0 ] && [ "$is_since_beat" -ge "$is_beat" ]; then
@@ -699,15 +776,43 @@ invoke_synthesizer() {
   run_status=0
   wait "$is_pid" || run_status=$?
   [ "$is_beats" -eq 0 ] || echo >&2
-  [ "$run_status" -eq 0 ]
+  SYNTH_ELAPSED="$is_waited"
+  if [ "$run_status" -ne 0 ]; then
+    # Codex logs every MCP worker's death before the line that matters.
+    SYNTH_FAIL_REASON=$(grep -v '^[[:space:]]*$' "$out.err" | grep -v 'rmcp::' | tail -1 | cut -c1-200)
+    SYNTH_FAIL_REASON="exit $run_status${SYNTH_FAIL_REASON:+: $SYNTH_FAIL_REASON}"
+    return 1
+  fi
+}
+
+# Walk a vendor's model ladder until one call succeeds at the process level.
+# Used by compact, whose own quality checks then judge the output.
+invoke_synthesizer_any() {
+  isa_kind="$1"
+  if [ "$isa_kind" = custom ]; then
+    invoke_synthesizer custom "$2" "$3"
+    return
+  fi
+  for isa_model in $(synth_models "$isa_kind"); do
+    if invoke_synthesizer "$isa_kind" "$2" "$3" "$isa_model"; then
+      return 0
+    fi
+    echo "${C_WARN}agent:${C_OFF} $isa_kind $isa_model failed after ${SYNTH_ELAPSED}s ($SYNTH_FAIL_REASON); trying the next model" >&2
+  done
+  return 1
 }
 
 try_synthesizer() {
   kind="$1"
   prompt="$2"
   out="$3"
-  echo "${C_PLAN}synthesis via $kind:${C_OFF} ${C_DIM}whole-document rewrite, usually several minutes${C_OFF}"
-  invoke_synthesizer "$kind" "$prompt" "$out" || return 1
+  ts_model="${4:-}"
+  if [ -n "$ts_model" ]; then
+    echo "${C_PLAN}synthesis via $kind ($ts_model, effort $(synth_effort "$kind")):${C_OFF} ${C_DIM}whole-document rewrite, usually several minutes${C_OFF}"
+  else
+    echo "${C_PLAN}synthesis via custom command:${C_OFF} ${C_DIM}whole-document rewrite, usually several minutes${C_OFF}"
+  fi
+  invoke_synthesizer "$kind" "$prompt" "$out" "$ts_model" || return 1
   strip_synth_preamble "$out"
   valid_synth_output "$out" "$SRC" || return 1
   ensure_private_tmp
@@ -724,6 +829,24 @@ try_synthesizer() {
 # in between (a hook, an editor, a store folded in by hand) would be silently
 # overwritten by a rewrite that never saw it. Keep the edited file, which the
 # deterministic merge already holds, and distribute that instead.
+# One vendor's ladder: each model in turn until one produces a document the
+# guards accept. A rung that is out of credits or otherwise unavailable fails
+# in seconds; one that answers but loses identifiers costs its minutes and is
+# refused; either way the next rung runs, and the reason is one plain line.
+synth_ladder() {
+  sl_kind="$1"
+  sl_prompt="$2"
+  sl_out="$3"
+  for sl_model in $(synth_models "$sl_kind"); do
+    if try_synthesizer "$sl_kind" "$sl_prompt" "$sl_out" "$sl_model"; then
+      accept_synth_output "$sl_kind ($sl_model)" "$sl_out"
+      return 0
+    fi
+    echo "${C_WARN}agent:${C_OFF} $sl_kind $sl_model did not produce a usable document after ${SYNTH_ELAPSED}s${SYNTH_FAIL_REASON:+ ($SYNTH_FAIL_REASON)}; trying the next model" >&2
+  done
+  return 1
+}
+
 accept_synth_output() {
   kind="$1"
   out="$2"
@@ -788,21 +911,15 @@ EOF
     auto)
       for kind in claude codex; do
         command -v "$kind" >/dev/null 2>&1 || continue
-        if try_synthesizer "$kind" "$prompt" "$out"; then
-          accept_synth_output "$kind" "$out"
-          return
-        fi
-        echo "${C_ERR}agent:${C_OFF} $kind synthesis failed; trying the next fallback" >&2
+        synth_ladder "$kind" "$prompt" "$out" && return
+        echo "${C_ERR}agent:${C_OFF} every $kind model failed; trying the next fallback" >&2
       done
       echo "${C_PLAN}synthesis: deterministic merge${C_OFF} ${C_DIM}(no usable Claude or Codex)${C_OFF}"
       return
       ;;
     claude | codex)
-      if try_synthesizer "$SYNTHESIZER_REQUEST" "$prompt" "$out"; then
-        accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
-      else
-        echo "${C_ERR}agent:${C_OFF} $SYNTHESIZER_REQUEST synthesis failed; keeping the deterministic merge" >&2
-      fi
+      synth_ladder "$SYNTHESIZER_REQUEST" "$prompt" "$out" ||
+        echo "${C_ERR}agent:${C_OFF} every $SYNTHESIZER_REQUEST model failed; keeping the deterministic merge" >&2
       ;;
     *)
       if try_synthesizer custom "$prompt" "$out"; then
@@ -1118,7 +1235,7 @@ compact_rewrite() {
     else
       compact_section_prompt "$cr_chunk" "$cr_in" "$cr_target" "$cr_prev" "$cr_dropped" >"$cr_prompt"
     fi
-    if ! invoke_synthesizer "$COMPACT_KIND" "$cr_prompt" "$cr_out"; then
+    if ! invoke_synthesizer_any "$COMPACT_KIND" "$cr_prompt" "$cr_out"; then
       echo "the synthesizer failed" >&2
       return 1
     fi
@@ -1268,7 +1385,7 @@ cmd_compact() {
   SYNTHESIZER_FROM_CLI=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --budget | --jobs | --synthesizer | --only | --skip)
+      --budget | --jobs | --synthesizer | --only | --skip | --claude-model | --claude-effort | --codex-model | --codex-effort)
         opt="$1"
         if [ "$#" -lt 2 ]; then
           echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
@@ -1283,6 +1400,7 @@ cmd_compact() {
             ;;
           --only) TARGET_ONLY="$2" ;;
           --skip) TARGET_SKIP="$2" ;;
+          *) set_synth_opt "$opt" "$2" || return 2 ;;
         esac
         shift 2
         ;;
@@ -1291,6 +1409,10 @@ cmd_compact() {
       --synthesizer=*)
         SYNTHESIZER_REQUEST=${1#*=}
         SYNTHESIZER_FROM_CLI=1
+        shift
+        ;;
+      --claude-model=* | --claude-effort=* | --codex-model=* | --codex-effort=*)
+        set_synth_opt "${1%%=*}" "${1#*=}" || return 2
         shift
         ;;
       --only=*) TARGET_ONLY=${1#*=}; shift ;;
@@ -1756,7 +1878,7 @@ cmd_apply() {
   SYNTHESIZER_FROM_CLI=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --synthesizer | --only | --skip)
+      --synthesizer | --only | --skip | --claude-model | --claude-effort | --codex-model | --codex-effort)
         opt="$1"
         if [ "$#" -lt 2 ]; then
           echo "${C_ERR}agent:${C_OFF} $opt requires a value" >&2
@@ -1769,12 +1891,17 @@ cmd_apply() {
             ;;
           --only) TARGET_ONLY="$2" ;;
           --skip) TARGET_SKIP="$2" ;;
+          *) set_synth_opt "$opt" "$2" || return 2 ;;
         esac
         shift 2
         ;;
       --synthesizer=*)
         SYNTHESIZER_REQUEST=${1#*=}
         SYNTHESIZER_FROM_CLI=1
+        shift
+        ;;
+      --claude-model=* | --claude-effort=* | --codex-model=* | --codex-effort=*)
+        set_synth_opt "${1%%=*}" "${1#*=}" || return 2
         shift
         ;;
       --only=*) TARGET_ONLY=${1#*=}; shift ;;

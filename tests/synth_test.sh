@@ -30,8 +30,10 @@ assert_contains "$TEST_ROOT/log-prompt.out" 'synthesis via custom'
 assert_contains "$TEST_ROOT/log-prompt.out" 'whole-document rewrite'
 assert_contains "$TEST_ROOT/log-prompt.out" 'stops after 1200s'
 
-# Model and effort reach the vendor only when asked for; unset, the argv is
-# the one the exact-match mocks in lib.sh pin.
+# The script decides the model. With nothing set, each vendor gets the first
+# rung of the script's ladder at the script's effort; a flag or environment
+# variable replaces it, flag over environment; a flag without a value is an
+# error. The argv-logging mocks accept any model so the ladder can be seen.
 printf '%s\n' \
   '#!/bin/sh' \
   'printf "claude %s\n" "$*" >>"$SYNTH_LOG"' \
@@ -44,27 +46,100 @@ printf '%s\n' \
   'awk "f{print} /^--- DOCUMENT ---/{f=1}"' >"$MOCK_BIN/codex"
 chmod +x "$MOCK_BIN/claude" "$MOCK_BIN/codex"
 : >"$SYNTH_LOG"
-(
-  export AGENT_SYNC_CLAUDE_MODEL=sonnet AGENT_SYNC_CLAUDE_EFFORT=low
-  run_agent_auto sync >/dev/null
-)
-assert_contains "$SYNTH_LOG" 'claude -p --no-session-persistence --permission-mode dontAsk --model sonnet --effort low'
-: >"$SYNTH_LOG"
-(
-  export AGENT_SYNC_CODEX_MODEL=gpt-5 AGENT_SYNC_CODEX_EFFORT=low
-  run_agent_auto sync --synthesizer codex >/dev/null
-)
-assert_contains "$SYNTH_LOG" 'codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -m gpt-5 -c model_reasoning_effort=low -'
-: >"$SYNTH_LOG"
-run_agent_auto sync >/dev/null
+run_agent_auto sync >"$TEST_ROOT/defaults.out"
 argv=$(grep '^claude' "$SYNTH_LOG")
-[ "$argv" = 'claude -p --no-session-persistence --permission-mode dontAsk' ] ||
-  fail "unset knobs changed the claude argv: $argv"
+[ "$argv" = "claude $CLAUDE_SYNTH_ARGV" ] || fail "default claude argv: $argv"
+assert_contains "$TEST_ROOT/defaults.out" 'synthesis via claude (fable, effort low)'
+assert_contains "$TEST_ROOT/defaults.out" 'synthesized via: claude (fable)'
 : >"$SYNTH_LOG"
 run_agent_auto sync --synthesizer codex >/dev/null
 argv=$(grep '^codex' "$SYNTH_LOG")
-[ "$argv" = 'codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -' ] ||
-  fail "unset knobs changed the codex argv: $argv"
+[ "$argv" = "codex $CODEX_SYNTH_ARGV" ] || fail "default codex argv: $argv"
+
+: >"$SYNTH_LOG"
+run_agent_auto sync --claude-model sonnet --claude-effort medium >/dev/null
+assert_contains "$SYNTH_LOG" '--model sonnet --effort medium'
+: >"$SYNTH_LOG"
+run_agent_auto sync --synthesizer codex --codex-model=gpt-5.5 --codex-effort=high >/dev/null
+assert_contains "$SYNTH_LOG" '-m gpt-5.5 -c model_reasoning_effort=high -'
+: >"$SYNTH_LOG"
+(
+  export AGENT_SYNC_CLAUDE_MODEL=opus AGENT_SYNC_CLAUDE_EFFORT=high
+  run_agent_auto sync >/dev/null
+)
+assert_contains "$SYNTH_LOG" '--model opus --effort high'
+: >"$SYNTH_LOG"
+(
+  export AGENT_SYNC_CLAUDE_MODEL=opus
+  run_agent_auto sync --claude-model sonnet >/dev/null
+)
+assert_contains "$SYNTH_LOG" '--model sonnet --effort low'
+assert_not_contains "$SYNTH_LOG" '--model opus'
+: >"$SYNTH_LOG"
+(
+  export AGENT_SYNC_CODEX_MODEL=gpt-5.4 AGENT_SYNC_CODEX_EFFORT=medium
+  run_agent_auto sync --synthesizer codex >/dev/null
+)
+assert_contains "$SYNTH_LOG" '-m gpt-5.4 -c model_reasoning_effort=medium -'
+if run_agent sync --claude-model >"$TEST_ROOT/no-value.out" 2>&1; then
+  fail 'a model flag without a value was accepted'
+fi
+assert_contains "$TEST_ROOT/no-value.out" '--claude-model requires a value'
+
+# The ladder. A rung that is out of credits fails in seconds and the next rung
+# runs; the reason is one plain line; a whole vendor failing hands over to the
+# next vendor; a flag can set the ladder itself.
+cat >"$MOCK_BIN/claude" <<'MOCK'
+#!/bin/sh
+printf 'claude %s\n' "$*" >>"$SYNTH_LOG"
+case "$*" in
+  *"--model fable "*)
+    echo 'Your workspace is out of credits. Ask your workspace owner to refill in order to continue.' >&2
+    exit 1
+    ;;
+  *"--model sonnet "*)
+    echo 'unknown model: sonnet' >&2
+    exit 1
+    ;;
+esac
+printf '# Opus synthesized memory\n'
+awk 'f { print } /^--- DOCUMENT ---$/ { f = 1 }'
+MOCK
+chmod +x "$MOCK_BIN/claude"
+: >"$SYNTH_LOG"
+run_agent_auto sync >"$TEST_ROOT/ladder.out" 2>"$TEST_ROOT/ladder.err"
+assert_contains "$CANON" '# Opus synthesized memory'
+[ "$(grep -c '^claude' "$SYNTH_LOG")" -eq 2 ] || fail "ladder tried $(grep -c '^claude' "$SYNTH_LOG") claude rungs, expected fable then opus"
+grep -n 'model fable' "$SYNTH_LOG" | grep -q '^1:' || fail 'fable was not the first rung'
+grep -n 'model opus' "$SYNTH_LOG" | grep -q '^2:' || fail 'opus was not the second rung'
+assert_contains "$TEST_ROOT/ladder.err" 'claude fable did not produce a usable document'
+assert_contains "$TEST_ROOT/ladder.err" 'out of credits'
+assert_contains "$TEST_ROOT/ladder.err" 'trying the next model'
+assert_not_contains "$TEST_ROOT/ladder.err" 'rmcp'
+assert_contains "$TEST_ROOT/ladder.out" 'synthesis via claude (opus, effort low)'
+assert_contains "$TEST_ROOT/ladder.out" 'synthesized via: claude (opus)'
+
+: >"$SYNTH_LOG"
+run_agent_auto sync --claude-model sonnet,opus >"$TEST_ROOT/ladder-flag.out" 2>"$TEST_ROOT/ladder-flag.err"
+grep -n 'model sonnet' "$SYNTH_LOG" | grep -q '^1:' || fail 'a flagged ladder did not start with its first model'
+grep -n 'model opus' "$SYNTH_LOG" | grep -q '^2:' || fail 'a flagged ladder did not continue to its second model'
+assert_not_contains "$SYNTH_LOG" 'model fable'
+assert_contains "$TEST_ROOT/ladder-flag.err" 'unknown model: sonnet'
+
+cat >"$MOCK_BIN/claude" <<'MOCK'
+#!/bin/sh
+printf 'claude %s\n' "$*" >>"$SYNTH_LOG"
+echo 'Your workspace is out of credits.' >&2
+exit 1
+MOCK
+chmod +x "$MOCK_BIN/claude"
+: >"$SYNTH_LOG"
+run_agent_auto sync >"$TEST_ROOT/exhausted.out" 2>"$TEST_ROOT/exhausted.err"
+assert_contains "$CANON" '# Codex synthesized memory'
+[ "$(grep -c '^claude' "$SYNTH_LOG")" -eq 3 ] || fail 'every claude rung should have been tried before codex'
+assert_contains "$SYNTH_LOG" 'codex exec'
+assert_contains "$TEST_ROOT/exhausted.err" 'every claude model failed; trying the next fallback'
+assert_contains "$TEST_ROOT/exhausted.out" 'synthesized via: codex (gpt-5.6-terra)'
 rm -f "$MOCK_BIN/claude" "$MOCK_BIN/codex"
 
 # The heartbeat: a dot per interval on stderr while the model runs, nothing

@@ -166,14 +166,18 @@ installed agent's global instructions slot.
 	document on stdout.
 
 *AGENT_SYNC_CLAUDE_MODEL*, *AGENT_SYNC_CLAUDE_EFFORT*
-	Passed to Claude as *--model* and *--effort* when it synthesizes.
-	Unset, Claude Code's configured default applies. A synthesis is
-	mostly the model copying the document back out, so a fast model at
-	low effort finishes in a fraction of the time.
+	Claude's model ladder (comma-separated, tried in order; default
+	fable,opus,sonnet) and effort (default low) when it synthesizes;
+	the *--claude-model* and *--claude-effort* flags override them for
+	one run. The script decides the model rather than the CLI's own
+	setting so a sync behaves the same on every machine. A model that
+	is out of credits, unavailable or answers badly hands over to the
+	next; after the last, Codex is tried, then the deterministic merge.
 
 *AGENT_SYNC_CODEX_MODEL*, *AGENT_SYNC_CODEX_EFFORT*
-	Passed to Codex as *-m* and *-c model_reasoning_effort=* when it
-	synthesizes. Unset, the Codex configuration applies.
+	The same for Codex (default gpt-5.6-terra,gpt-5.5,gpt-5.4 at low),
+	passed as *-m* and *-c model_reasoning_effort=*; *--codex-model*
+	and *--codex-effort* override them for one run.
 
 *AGENT_SYNC_SYNTH_HEARTBEAT*
 	Seconds between progress dots on standard error while a model

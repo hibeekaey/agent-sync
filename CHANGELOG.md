@@ -14,10 +14,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   seconds on a terminal (`AGENT_SYNC_SYNTH_HEARTBEAT`), and a model still
   running after `AGENT_SYNC_SYNTH_TIMEOUT` seconds (default 1200) is stopped
   so the fallback chain runs instead of the sync hanging.
-- Model and effort for the synthesizer: `AGENT_SYNC_CLAUDE_MODEL`,
-  `AGENT_SYNC_CLAUDE_EFFORT`, `AGENT_SYNC_CODEX_MODEL` and
-  `AGENT_SYNC_CODEX_EFFORT`. The work is mostly copying the document back
-  out, so a faster model at low effort cuts the run to a fraction.
+- The script decides the model. Claude tries `fable`, `opus`, `sonnet` at
+  `low` effort and Codex tries `gpt-5.6-terra`, `gpt-5.5`, `gpt-5.4` at
+  `low`, instead of whatever each CLI is set to interactively, so a sync
+  behaves the same on every machine. A rung that is out of credits,
+  rate-limited or unknown fails in seconds and the next runs; one whose
+  answer fails the guard hands over too; the deterministic merge is the last
+  resort. Each hand-over is one plain line naming the model, the elapsed
+  time and the vendor's own reason. Override for one run with
+  `--claude-model`, `--claude-effort`, `--codex-model`, `--codex-effort`
+  (sync, apply, compact) or standing with `AGENT_SYNC_CLAUDE_MODEL`,
+  `AGENT_SYNC_CLAUDE_EFFORT`, `AGENT_SYNC_CODEX_MODEL`,
+  `AGENT_SYNC_CODEX_EFFORT`. Both vendors run with their MCP servers off,
+  so a broken or login-prompting server on the user's side cannot slow or
+  break the rewrite.
 - One sync writes at a time. A second run started while another holds
   `~/.config/agent-sync/sync.lock` exits 1 naming the holder's pid; a lock
   left by a killed run is reclaimed. Dry runs are not blocked.
