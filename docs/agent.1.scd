@@ -40,9 +40,13 @@ installed agent's global instructions slot.
 	and the newly imported memories and answers with only the sections that
 	change, which agent-sync splices in; a memory block folded on an earlier
 	sync is dropped without a model call. *--rewrite* asks for a rewrite of
-	the whole file instead. The first time a pre-existing file agent-sync
-	did not write would be overwritten, it is preserved beside the target
-	as <file>.orig.
+	the whole file instead. A sync that leaves the file over its byte
+	budget trims the largest sections back in the same run (see *compact*;
+	never with *deterministic*, never touching an imported block or a store
+	file, and not at all when the curated text alone fits the budget);
+	*--no-compact* or *AGENT_SYNC_COMPACT=0* skips that. The first
+	time a pre-existing file agent-sync did not write would be overwritten,
+	it is preserved beside the target as <file>.orig.
 
 *compact* [--budget BYTES] [--jobs N] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
 	Keep the synthesized file under a byte budget (default 150000, see
@@ -50,8 +54,11 @@ installed agent's global instructions slot.
 	unless *--force*. Otherwise each raw imported section is promoted into
 	curated notes under "## Promoted from AGENT" and its store files are
 	archived to ~/.config/agent-sync/archive/ and removed, so the next sync
-	has nothing to re-import; then every curated section of 2 KB or more is
-	rewritten shorter by the model, one section at a time. A rewrite may
+	has nothing to re-import; then curated sections of 2 KB or more are
+	rewritten shorter by the model, largest first: each is asked for at
+	most a 30% cut until the deficit is covered, and only if that is not
+	enough are the same sections asked for more, toward their floors, so a
+	small overrun touches one or two large sections and nothing else. A rewrite may
 	forget how a lesson was learned, items marked settled, refuted, muted or
 	parked, one-off references (commit shas, PR numbers, run ids, past
 	versions) and anything else of low value; it is refused, and the section

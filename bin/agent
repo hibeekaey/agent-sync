@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.9.0"
+VERSION="1.10.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -49,6 +49,7 @@ SYNC_LOCK=""
 SYNTH_SRC_SUM=""
 SYNTH_QUIET=0
 SYNTH_REWRITE="${AGENT_SYNC_REWRITE:-0}"
+SYNTH_COMPACT="${AGENT_SYNC_COMPACT:-1}"
 SYNTH_SCOPE=full
 SYNTH_ACCEPTED=0
 FOLD_SRC=""
@@ -138,10 +139,11 @@ usage() {
 agent v$VERSION: synchronize agent memory across AI coding agents
 
 Usage:
-  agent sync [--synthesizer MODE] [--rewrite] [--dry-run]
+  agent sync [--synthesizer MODE] [--rewrite] [--no-compact] [--dry-run]
                          gather every agent's memory stores, fold the new
-                         ones into the synthesized file, and redistribute to
-                         all installed agents
+                         ones into the synthesized file, trim it back under
+                         budget if it grew past it, and redistribute to all
+                         installed agents
   agent status           per-agent parity check (exit 1 if anything is stale)
   agent diff             show stale targets as unified diffs (exit 1 if any)
   agent targets          list sync targets and whether each tool is installed
@@ -150,7 +152,7 @@ Usage:
                          redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
                          (default: ./agent-memories) for editing and review
-  agent apply [DIR] [--synthesizer MODE] [--rewrite] [--dry-run]
+  agent apply [DIR] [--synthesizer MODE] [--rewrite] [--no-compact] [--dry-run]
                          push edited staged files from a gather DIR back to
                          their original stores, then run the full sync
   agent link [DIR] [--import]
@@ -232,9 +234,13 @@ while one holds $STATE_DIR/sync.lock exits 1.
 
 Size budget: the synthesized file is read into every session on every tool,
 so sync, status and doctor report its size against AGENT_SYNC_BUDGET
-(default $COMPACT_BUDGET_DEFAULT bytes) and agent compact brings it back under. compact
-needs a model (claude, codex or a custom command); it exits immediately
-while the file is within budget, so it is cheap to schedule.
+(default $COMPACT_BUDGET_DEFAULT bytes). A sync that leaves the file over budget trims
+it back the same run (a model rewrites the largest sections first, only as
+many as needed; never on --synthesizer deterministic, never touching
+imported blocks or store files; --no-compact or AGENT_SYNC_COMPACT=0 skips
+it). agent compact does the same by hand, and also promotes raw imports and
+archives their stores; it needs a model and exits immediately while the file
+is within budget, so it is cheap to schedule.
 
 Tools are detected by their config directory; absent tools are skipped, so
 one binary serves every machine.
@@ -530,6 +536,9 @@ parse_synthesizer_args() {
         ;;
       --rewrite)
         SYNTH_REWRITE=1
+        ;;
+      --no-compact)
+        SYNTH_COMPACT=0
         ;;
       --dry-run)
         DRY_RUN=1
@@ -843,7 +852,68 @@ try_synthesizer() {
   if [ -n "$ts_missing" ]; then
     ts_count=$(printf '%s\n' "$ts_missing" | grep -c .)
     echo "${C_ERR}agent:${C_OFF} synthesis dropped $ts_count identifier(s) the document carries, e.g. $(printf '%s\n' "$ts_missing" | head -3 | tr '\n' ' '); refusing to replace $SRC with it" >&2
-    return 1
+    SYNTH_DROPPED="$ts_missing"
+    return 3
+  fi
+}
+
+# One model, up to two calls. A model that answers well but loses an
+# identifier is not unavailable, it is careless; told exactly what it lost,
+# it usually restores it on the next try (compact learned this first), and
+# that is cheaper than a fresh model starting from nothing. Any other failure
+# passes straight through to the ladder.
+SYNTH_DROPPED=""
+
+synth_attempt() {
+  sa_kind="$1"
+  sa_prompt="$2"
+  sa_out="$3"
+  sa_model="${4:-}"
+  sa_status=0
+  try_synthesizer "$sa_kind" "$sa_prompt" "$sa_out" "$sa_model" || sa_status=$?
+  [ "$sa_status" -eq 3 ] || return "$sa_status"
+  sa_count=$(printf '%s\n' "$SYNTH_DROPPED" | grep -c .)
+  echo "${C_WARN}agent:${C_OFF} retrying $sa_kind${sa_model:+ $sa_model} once, naming the $sa_count identifier(s) it dropped" >&2
+  synth_build_prompt "$sa_prompt.retry" "$SYNTH_DROPPED"
+  sa_status=0
+  try_synthesizer "$sa_kind" "$sa_prompt.retry" "$sa_out" "$sa_model" || sa_status=$?
+  return "$sa_status"
+}
+
+# Appended to a second prompt: what the first answer lost.
+synth_dropped_note() {
+  [ -n "$1" ] || return 0
+  echo
+  echo 'Your previous answer dropped the following, each of which must appear verbatim in the new answer:'
+  printf '%s\n' "$1" | sed 's/^/- /'
+}
+
+synth_full_prompt() {
+  {
+    cat <<'EOF'
+You are the memory synthesizer for agent-sync. Below is the synthesized
+memory file for this machine's AI coding agents. It contains curated
+sections plus marker-delimited sections of raw memories imported from
+individual agents. Rewrite the whole document: fold the durable,
+non-duplicated facts from the imported sections into the curated sections,
+drop noise and duplicates, resolve conflicts in favor of the newest
+information, keep the document's structure and voice, and remove the
+imported sections you fold in.
+EOF
+    compact_keep_rules
+    echo 'Print ONLY the new markdown document.'
+    synth_dropped_note "${2:-}"
+    echo
+    echo '--- DOCUMENT ---'
+    cat "$SRC"
+  } >"$1"
+}
+
+synth_build_prompt() {
+  if [ "$SYNTH_SCOPE" = fold ]; then
+    fold_prompt "$1" "${2:-}"
+  else
+    synth_full_prompt "$1" "${2:-}"
   fi
 }
 
@@ -860,7 +930,7 @@ synth_ladder() {
   sl_prompt="$2"
   sl_out="$3"
   for sl_model in $(synth_models "$sl_kind"); do
-    if try_synthesizer "$sl_kind" "$sl_prompt" "$sl_out" "$sl_model"; then
+    if synth_attempt "$sl_kind" "$sl_prompt" "$sl_out" "$sl_model"; then
       accept_synth_output "$sl_kind ($sl_model)" "$sl_out"
       [ "$SYNTH_SCOPE" = fold ] && [ "$SYNTH_ACCEPTED" -eq 1 ] && fold_record
       return 0
@@ -985,6 +1055,7 @@ EOF
 - Resolve a conflict in favor of the newest information. Do not print the new
   memories as a block; do not print their file paths or YAML frontmatter.
 EOF
+    synth_dropped_note "${2:-}"
     echo
     echo '--- MEMORY FILE (context only; print just the sections that change) ---'
     cat "$FOLD_SRC/context"
@@ -1143,27 +1214,9 @@ synthesize() {
       fold_drop_done
       return
     fi
-    fold_prompt "$prompt"
     [ "$FOLD_DONE" -eq 0 ] || echo "${C_DIM}synthesis: $FOLD_DONE import block(s) folded before will be dropped with the fold${C_OFF}"
-  else
-    {
-      cat <<'EOF'
-You are the memory synthesizer for agent-sync. Below is the synthesized
-memory file for this machine's AI coding agents. It contains curated
-sections plus marker-delimited sections of raw memories imported from
-individual agents. Rewrite the whole document: fold the durable,
-non-duplicated facts from the imported sections into the curated sections,
-drop noise and duplicates, resolve conflicts in favor of the newest
-information, keep the document's structure and voice, and remove the
-imported sections you fold in.
-EOF
-      compact_keep_rules
-      echo 'Print ONLY the new markdown document.'
-      echo
-      echo '--- DOCUMENT ---'
-      cat "$SRC"
-    } >"$prompt"
   fi
+  synth_build_prompt "$prompt"
   synth_hb=$(synth_heartbeat)
   synth_to=$(synth_timeout)
   synth_note="stops after ${synth_to}s (AGENT_SYNC_SYNTH_TIMEOUT)"
@@ -1185,7 +1238,7 @@ EOF
         echo "${C_ERR}agent:${C_OFF} every $SYNTHESIZER_REQUEST model failed; keeping the deterministic merge" >&2
       ;;
     *)
-      if try_synthesizer custom "$prompt" "$out"; then
+      if synth_attempt custom "$prompt" "$out"; then
         accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
       else
         echo "${C_ERR}agent:${C_OFF} custom synthesizer failed; keeping the deterministic merge" >&2
@@ -1228,6 +1281,22 @@ COMPACT_JOBS=""
 # protects every backtick span and every bare letter-and-digit token, and
 # forbids forgetting.
 COMPACT_MODE=stable
+# The plan is largest-first: round one asks the biggest candidates for at
+# most COMPACT_GENTLE_CUT_PERCENT each until the deficit is covered, so a
+# small overrun costs one or two large sections a light trim and never
+# touches the dense small ones; only when that is not enough does round two
+# deepen the same sections, largest first, toward the floors. An import block
+# is promoted with a lighter first ask (promotion drops headers, frontmatter
+# and narrative) and is never planned below a quarter of its size.
+COMPACT_GENTLE_CUT_PERCENT=30
+COMPACT_IMPORT_GENTLE_PERCENT=50
+COMPACT_IMPORT_MIN_RATIO_PERCENT=25
+# Set by the budget pass at the end of a sync: a sync must never archive a
+# store or promote an import as a side effect, the synthesis already wrote
+# the .bak of the pre-sync file, and sync redistributes afterwards itself.
+COMPACT_IMPORTS=1
+COMPACT_BACKUP=1
+COMPACT_DISTRIBUTE=1
 
 compact_budget() {
   cb="${COMPACT_BUDGET:-${AGENT_SYNC_BUDGET:-$COMPACT_BUDGET_DEFAULT}}"
@@ -1689,6 +1758,77 @@ cmd_compact() {
         ;;
     esac
   done
+  compact_run
+}
+
+# Which chunks to rewrite and to what size. Candidates are import blocks
+# (unless COMPACT_IMPORTS is 0) and sections of COMPACT_MIN_SECTION_BYTES or
+# more; imports come first, then sections largest first. Writes
+# $1/plan as "idx|kind|bytes|target", one line per chunk that gets a call.
+compact_plan() {
+  cp_dir="$1"
+  cp_need="$2"
+  : >"$cp_dir/candidates"
+  while IFS='|' read -r cp_idx cp_kind; do
+    cp_chunk="$cp_dir/chunk-$(printf '%04d' "$cp_idx")"
+    cp_bytes=$(file_bytes "$cp_chunk")
+    case "$cp_kind" in
+      import:pack:*) ;;
+      import:*)
+        if [ "$COMPACT_IMPORTS" -eq 1 ]; then
+          printf '1|%s|%s|%s\n' "$cp_bytes" "$cp_idx" "$cp_kind" >>"$cp_dir/candidates"
+        fi
+        ;;
+      section)
+        if [ "$cp_bytes" -ge "$COMPACT_MIN_SECTION_BYTES" ]; then
+          printf '2|%s|%s|%s\n' "$cp_bytes" "$cp_idx" "$cp_kind" >>"$cp_dir/candidates"
+        fi
+        ;;
+    esac
+  done <"$cp_dir/manifest"
+  if [ ! -s "$cp_dir/candidates" ]; then
+    if [ "$COMPACT_IMPORTS" -eq 1 ]; then
+      echo "${C_ERR}agent:${C_OFF} nothing to compact: no agent imports and no section of $COMPACT_MIN_SECTION_BYTES bytes or more" >&2
+    else
+      echo "${C_ERR}agent:${C_OFF} nothing to compact: no section of $COMPACT_MIN_SECTION_BYTES bytes or more" >&2
+    fi
+    return 1
+  fi
+  sort -t'|' -k1,1n -k2,2nr "$cp_dir/candidates" |
+    awk -F'|' -v OFS='|' -v need="$cp_need" \
+      -v sg="$COMPACT_GENTLE_CUT_PERCENT" -v sfl="$COMPACT_MIN_RATIO_PERCENT" \
+      -v ig="$COMPACT_IMPORT_GENTLE_PERCENT" -v ifl="$COMPACT_IMPORT_MIN_RATIO_PERCENT" '
+      {
+        n++
+        bytes[n] = $2; idx[n] = $3; kind[n] = $4; cut[n] = 0
+        if ($4 ~ /^import:/) { gentle[n] = int($2 * ig / 100); most[n] = int($2 * (100 - ifl) / 100) }
+        else { gentle[n] = int($2 * sg / 100); most[n] = int($2 * (100 - sfl) / 100) }
+      }
+      END {
+        rem = need
+        # Round one: a light ask of each candidate, largest first, until
+        # the deficit is covered. An import is always promoted.
+        for (i = 1; i <= n; i++) {
+          if (kind[i] ~ /^import:/) { cut[i] = gentle[i]; rem -= cut[i]; continue }
+          if (rem <= 0) continue
+          c = gentle[i]; if (c > rem) c = rem
+          cut[i] = c; rem -= c
+        }
+        # Round two, only if still short: deepen the same order toward
+        # the floors.
+        for (i = 1; i <= n && rem > 0; i++) {
+          room = most[i] - cut[i]; if (room <= 0) continue
+          c = room; if (c > rem) c = rem
+          cut[i] += c; rem -= c
+        }
+        for (i = 1; i <= n; i++) if (cut[i] > 0) print idx[i], kind[i], bytes[i], bytes[i] - cut[i]
+      }' >"$cp_dir/plan"
+  [ -s "$cp_dir/plan" ]
+}
+
+# Everything after option parsing, shared by the compact command and the
+# budget pass at the end of a semantic sync.
+compact_run() {
   validate_synthesizer_request || return 2
   require_src
   budget=$(compact_budget) || return 2
@@ -1731,54 +1871,24 @@ cmd_compact() {
   compact_split "$cdir"
   goal=$((budget * COMPACT_HEADROOM_PERCENT / 100))
   [ "$total" -gt "$goal" ] || goal=$((total * 75 / 100))
-  # What can shrink: agent imports (promoted) and sections worth a call.
-  compressible=0
-  while IFS='|' read -r idx kind; do
-    chunk="$cdir/chunk-$(printf '%04d' "$idx")"
-    bytes=$(file_bytes "$chunk")
-    case "$kind" in
-      import:pack:*) ;;
-      import:*) compressible=$((compressible + bytes)) ;;
-      section) [ "$bytes" -ge "$COMPACT_MIN_SECTION_BYTES" ] && compressible=$((compressible + bytes)) ;;
-    esac
-  done <"$cdir/manifest"
-  if [ "$compressible" -eq 0 ]; then
-    echo "${C_ERR}agent:${C_OFF} nothing to compact: no agent imports and no section of $COMPACT_MIN_SECTION_BYTES bytes or more" >&2
-    return 1
-  fi
-  need=$((total - goal))
-  ratio=$(((compressible - need) * 100 / compressible))
-  [ "$ratio" -ge "$COMPACT_MIN_RATIO_PERCENT" ] || ratio="$COMPACT_MIN_RATIO_PERCENT"
-  [ "$ratio" -lt 100 ] || ratio=99
-  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; rewriting compressible sections to ${ratio}% via ${C_PLAN}$COMPACT_KIND${C_OFF} ${C_DIM}(mode: $COMPACT_MODE, jobs: $jobs)${C_OFF}"
+  compact_plan "$cdir" $((total - goal)) || return 1
+  planned=$(grep -c . "$cdir/plan" || true)
+  echo "compact: ${C_BOLD}$total bytes${C_OFF}, budget $budget, goal $goal; trimming the largest sections first, $planned of them, via ${C_PLAN}$COMPACT_KIND${C_OFF} ${C_DIM}(mode: $COMPACT_MODE, jobs: $jobs)${C_OFF}"
   today=$(date +%Y-%m-%d)
   # Rewrites run concurrently, $jobs at a time; each worker leaves its result
   # in $chunk.status and its report line in $chunk.line, and the report is
   # printed in document order once every worker has finished.
   running=""
   nrunning=0
-  while IFS='|' read -r idx kind; do
+  while IFS='|' read -r idx kind bytes target; do
     chunk="$cdir/chunk-$(printf '%04d' "$idx")"
-    bytes=$(file_bytes "$chunk")
-    case "$kind" in
-      import:pack:*) continue ;;
-      import:*)
-        target=$((bytes * ratio / 100))
-        if [ "$DRY_RUN" -eq 1 ]; then
-          echo "${C_PLAN}dry-run:${C_OFF} would promote import:${kind#import:} ($bytes bytes) to about $target and archive its stores"
-          continue
-        fi
-        ;;
-      section)
-        [ "$bytes" -ge "$COMPACT_MIN_SECTION_BYTES" ] || continue
-        target=$((bytes * ratio / 100))
-        if [ "$DRY_RUN" -eq 1 ]; then
-          echo "${C_PLAN}dry-run:${C_OFF} would rewrite \"$(head -1 "$chunk")\" ($bytes bytes) to about $target"
-          continue
-        fi
-        ;;
-      *) continue ;;
-    esac
+    if [ "$DRY_RUN" -eq 1 ]; then
+      case "$kind" in
+        import:*) echo "${C_PLAN}dry-run:${C_OFF} would promote import:${kind#import:} ($bytes bytes) to about $target and archive its stores" ;;
+        *) echo "${C_PLAN}dry-run:${C_OFF} would rewrite \"$(head -1 "$chunk")\" ($bytes bytes) to about $target" ;;
+      esac
+      continue
+    fi
     compact_worker "$chunk" "$kind" "$target" "$today" &
     running="${running:+$running }$!"
     nrunning=$((nrunning + 1))
@@ -1791,7 +1901,7 @@ cmd_compact() {
       esac
       nrunning=$((nrunning - 1))
     fi
-  done <"$cdir/manifest"
+  done <"$cdir/plan"
   wait
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "${C_PLAN}dry-run: no model was called and nothing was written${C_OFF}"
@@ -1829,13 +1939,13 @@ cmd_compact() {
       cat "$chunk"
     fi
   done <"$cdir/manifest" >"$CANON_TMP"
-  cp "$SRC" "$SRC.bak"
+  [ "$COMPACT_BACKUP" -eq 0 ] || cp "$SRC" "$SRC.bak"
   mv "$CANON_TMP" "$SRC"
   CANON_TMP=""
   for from in $promoted; do
     archive_stores "$from" || echo "${C_WARN}the stores of $from were not archived; the next sync will re-import them${C_OFF}"
   done
-  distribute
+  [ "$COMPACT_DISTRIBUTE" -eq 0 ] || distribute
   final=$(file_bytes "$SRC")
   echo "compact: ${C_BOLD}$total -> $final bytes${C_OFF} ${C_DIM}(previous file at $SRC.bak)${C_OFF}"
   [ "$refused" -eq 0 ] || echo "${C_WARN}$refused section(s) kept as they were; see the reasons above${C_OFF}"
@@ -1843,6 +1953,46 @@ cmd_compact() {
     echo "${C_WARN}still $((final - budget)) bytes over the $budget-byte budget; run agent compact again${C_OFF}"
     return 1
   fi
+}
+
+# The budget pass at the end of a semantic sync: when the file it just wrote
+# is over budget, trim the largest sections first so the file every agent
+# loads on every turn stays the size it was sized to be. Never on the
+# deterministic path (a hook must stay fast and must not spend a model call),
+# never touching import blocks or archiving a store, and the .bak written by
+# the synthesis stays the pre-sync file.
+compact_after_sync() {
+  [ "$SYNTH_COMPACT" != 0 ] || return 0
+  [ "$SYNTHESIZER_REQUEST" != deterministic ] || return 0
+  if [ "$SYNTHESIZER_REQUEST" = auto ] &&
+    ! command -v claude >/dev/null 2>&1 &&
+    ! command -v codex >/dev/null 2>&1; then
+    return 0
+  fi
+  cas_budget=$(compact_budget) || return 0
+  cas_bytes=$(file_bytes "$SRC")
+  [ "$cas_bytes" -gt "$cas_budget" ] || return 0
+  # An import block still to be folded is on its way out; trimming curated
+  # text to make room for it would trade what is kept for what is not.
+  if grep -q '^<!-- agent-sync:begin imported:' "$SRC"; then
+    cas_curated=$(fold_context | wc -c | tr -d ' ')
+    if [ "$cas_curated" -le "$cas_budget" ]; then
+      echo "${C_DIM}budget: $cas_bytes bytes is over $cas_budget only by the imported block(s) still to fold; the curated text ($cas_curated bytes) fits, so nothing is trimmed${C_OFF}"
+      return 0
+    fi
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "${C_PLAN}dry-run: would compact${C_OFF} ${C_DIM}($cas_bytes bytes, over the $cas_budget-byte budget)${C_OFF}"
+    return 0
+  fi
+  echo "${C_WARN}budget:${C_OFF} $cas_bytes bytes is over $cas_budget; ${C_PLAN}compacting the largest sections first${C_OFF} ${C_DIM}(--no-compact or AGENT_SYNC_COMPACT=0 skips this)${C_OFF}"
+  COMPACT_IMPORTS=0
+  COMPACT_DISTRIBUTE=0
+  [ "$SYNTH_ACCEPTED" -eq 1 ] && COMPACT_BACKUP=0
+  compact_run || true
+  COMPACT_IMPORTS=1
+  COMPACT_DISTRIBUTE=1
+  COMPACT_BACKUP=1
 }
 
 distribute() {
@@ -1928,6 +2078,7 @@ cmd_sync() {
 # and reclaimed rather than blocking every sync until someone deletes it.
 acquire_sync_lock() {
   [ "$DRY_RUN" -eq 0 ] || return 0
+  [ -z "$SYNC_LOCK" ] || return 0
   asl_lock="$STATE_DIR/sync.lock"
   mkdir -p "$STATE_DIR"
   asl_tries=0
@@ -1981,6 +2132,7 @@ sync_after_options() {
     import_pack "$pname"
   done
   synthesize
+  compact_after_sync
   distribute
   budget_report || true
 }
@@ -2170,6 +2322,7 @@ cmd_apply() {
       --only=*) TARGET_ONLY=${1#*=}; shift ;;
       --skip=*) TARGET_SKIP=${1#*=}; shift ;;
       --rewrite) SYNTH_REWRITE=1; shift ;;
+      --no-compact) SYNTH_COMPACT=0; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --*)
         echo "${C_ERR}agent:${C_OFF} unknown apply option: $1" >&2

@@ -169,7 +169,8 @@ dropped with no model call, so a sync with nothing new costs nothing, and a
 fact you remove from the curated text by hand brings its block back for
 folding. An answer that is not sections, echoes an import block, repeats a
 heading, shrinks a section past 70% (a fold adds) or drops an identifier is
-refused and the next model tried. `agent sync --rewrite` (or
+refused; a model that dropped an identifier is first tried once more, told
+exactly what it lost, and only then is the next model tried. `agent sync --rewrite` (or
 `AGENT_SYNC_REWRITE=1`) asks for a rewrite of the whole document instead,
 which is the right tool for a deliberate tidy and takes minutes.
 
@@ -250,9 +251,25 @@ it.
 ## Keeping the file small
 
 The synthesized file is read into every session on every tool, so its size
-is paid on every turn, and the deterministic merge grows it by the full text
-of every memory store on every sync. `agent compact` keeps it under a byte
-budget (150 KB by default, `AGENT_SYNC_BUDGET` or `--budget` to change it):
+is paid on every turn. A budget keeps that in check (150 KB by default,
+`AGENT_SYNC_BUDGET` or `--budget` to change it), and a sync that leaves the
+file over it trims it back in the same run: a model rewrites the **largest
+sections first**, asking each for at most a 30% cut until the deficit is
+covered, and only when that is not enough deepens the same sections toward
+their floors — so a small overrun costs one or two big appendices a light
+trim and never touches the dense small ones. This budget pass runs only
+after a model synthesis (never with `--synthesizer deterministic`, so a hook
+stays fast), never touches an imported block or archives a store, stands
+down when the file is over budget only because of a block still to be
+folded (trimming curated text to make room for it would trade what is kept
+for what is not), and keeps the `.bak` the synthesis wrote, so `.bak` is
+still the file as the run found it. `--no-compact` or `AGENT_SYNC_COMPACT=0`
+skips it.
+
+`agent compact` does the same by hand, plus what a sync will not: it
+promotes raw imported sections into curated notes (`## Promoted from
+claude`) and archives their store files to `~/.config/agent-sync/archive/`
+and removes them, so the next sync has nothing to re-import.
 
 ```sh
 agent compact             # exits at once while the file is within budget
@@ -261,11 +278,7 @@ agent compact --force     # compact anyway
 agent compact --jobs 8    # rewrite eight sections at a time (default 4)
 ```
 
-When the file is over budget, each raw imported section is promoted into
-curated notes (`## Promoted from claude`) and its store files are archived
-to `~/.config/agent-sync/archive/` and removed, so the next sync has nothing
-to re-import. Then every curated section of 2 KB or more is rewritten
-shorter by the model, up to the selected job count at a time. A rewrite may forget how a
+Only sections of 2 KB or more are candidates. A rewrite may forget how a
 lesson was learned, items marked settled, refuted, muted or parked, one-off
 references (commit shas, PR numbers, run ids, past versions) and anything
 else of low value, but it is refused and the section kept unless it starts
@@ -273,12 +286,11 @@ with the same heading, is at least a quarter of the original, and still
 contains every real URL, hostname, environment variable and long id the
 original had: those route traffic or unlock access and cannot be re-derived,
 while paths, commands and code words are asked for but may go with a story
-the rewrite forgets. A rewrite that
-drops one gets a second attempt naming what it lost. `--keep-all` forbids
-forgetting and protects every backtick span and bare letter-and-digit
-token. `sync` reports the size after every run; `status`
-and `doctor` fail while the file is over budget. `compact` needs a model and
-rejects `--synthesizer deterministic`.
+the rewrite forgets. A rewrite that drops one gets a second attempt naming
+what it lost. `--keep-all` forbids forgetting and protects every backtick
+span and bare letter-and-digit token. `sync` reports the size after every
+run; `status` and `doctor` fail while the file is over budget. `compact`
+needs a model and rejects `--synthesizer deterministic`.
 
 Only store versions captured by the preceding `sync` are archived. A store
 created or changed while compaction runs stays live and is folded on the next
