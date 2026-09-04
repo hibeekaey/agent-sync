@@ -227,6 +227,39 @@ command that reads a merge prompt on stdin and prints the merged
 document on stdout.\&
 .PP
 .RE
+\fBAGENT_SYNC_CLAUDE_MODEL\fR, \fBAGENT_SYNC_CLAUDE_EFFORT\fR
+.RS 4
+Claude'\&s model ladder (comma\-separated, tried in order; default
+fable,opus,sonnet) and effort (default low) when it synthesizes;
+the \fB\-\-claude\-model\fR and \fB\-\-claude\-effort\fR flags override them for
+one run.\& The script decides the model rather than the CLI'\&s own
+setting so a sync behaves the same on every machine.\& A model that
+is out of credits, unavailable or answers badly hands over to the
+next; after the last, Codex is tried, then the deterministic merge.\&
+.PP
+.RE
+\fBAGENT_SYNC_CODEX_MODEL\fR, \fBAGENT_SYNC_CODEX_EFFORT\fR
+.RS 4
+The same for Codex (default gpt\-5.\&6\-terra,gpt\-5.\&5,gpt\-5.\&4 at low),
+passed as \fB\-m\fR and \fB\-c model_reasoning_effort=\fR; \fB\-\-codex\-model\fR
+and \fB\-\-codex\-effort\fR override them for one run.\&
+.PP
+.RE
+\fBAGENT_SYNC_SYNTH_HEARTBEAT\fR
+.RS 4
+Seconds between progress dots on standard error while a model
+rewrites the file (default 30 when standard error is a terminal,
+otherwise off; 0 turns it off).\&
+.PP
+.RE
+\fBAGENT_SYNC_SYNTH_TIMEOUT\fR
+.RS 4
+Seconds after which a still\-running synthesis is stopped and the
+fallback chain continues (default 1200; 0 disables the timeout).\&
+One sync writes at a time: a run started while another holds
+\(ti/.\&config/agent\-sync/sync.\&lock exits 1 naming the holder.\&
+.PP
+.RE
 \fBAGENT_SYNC_BUDGET\fR
 .RS 4
 Byte budget for the synthesized file (default 150000).\& Reported by

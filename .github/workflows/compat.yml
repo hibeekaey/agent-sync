@@ -25,17 +25,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The synthesizer command lines (bin/agent synth_command) are
+          # asserted alongside the mcp grammar.
           - tool: claude
             package: '@anthropic-ai/claude-code'
             assertions: |
               mcp add-json --help :: --scope
               mcp remove --help :: --scope
+              --help :: -p
+              --help :: --no-session-persistence
+              --help :: --permission-mode
+              --help :: --strict-mcp-config
+              --help :: --mcp-config
+              --help :: --model
+              --help :: --effort
           - tool: codex
             package: '@openai/codex'
             assertions: |
               mcp add --help :: --url
               mcp add --help :: --env
               mcp remove --help :: mcp remove
+              exec --help :: --skip-git-repo-check
+              exec --help :: --sandbox
+              exec --help :: --ephemeral
+              exec --help :: --color
+              exec --help :: -m
+              exec --help :: -c
           - tool: gemini
             package: '@google/gemini-cli'
             assertions: |
@@ -84,7 +99,7 @@ jobs:
           ASSERTIONS: ${{ matrix.assertions }}
         run: |
           if ! printf '%s\n' "$ASSERTIONS" | scripts/check-cli-grammar.sh "$TOOL"; then
-            echo "::error::$TOOL no longer documents grammar that agent mcp" \
-              "sync depends on; see the failures above" >&2
+            echo "::error::$TOOL no longer documents grammar that agent" \
+              "depends on (mcp sync or the synthesizer); see the failures above" >&2
             exit 1
           fi

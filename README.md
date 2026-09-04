@@ -181,6 +181,59 @@ and long id of the document still present), the previous file is kept at
 merge. A recursion guard stops a synthesizer-spawned agent from re-entering
 agent-sync.
 
+The script decides the model, so a sync behaves the same on every machine
+whatever each CLI is set to interactively. Each vendor has a ladder, tried
+in order until one produces a document the checks accept:
+
+| Vendor | Models | Effort |
+| --- | --- | --- |
+| Claude | `fable`, then `opus`, then `sonnet` | `low` |
+| Codex | `gpt-5.6-terra`, then `gpt-5.5`, then `gpt-5.4` | `low` |
+
+A model that is out of credits, rate-limited or unknown fails in seconds and
+the next rung runs; one that answers but drops identifiers costs its minutes
+and is refused, and the next rung runs; when every rung of every vendor has
+failed the deterministic merge stands. Each hand-over is one plain line
+saying which model failed, after how long, and why (the vendor's own last
+words, e.g. `Your workspace is out of credits`). Effort is low on purpose:
+the work is copying the document back out (Fable at low effort re-emits a
+148 KB file faithfully in about ten minutes), and the smaller models were
+measured dropping identifiers, which is why they are fallbacks rather than
+the first choice. Each vendor runs with its MCP servers switched off, so a
+server that is slow, broken or asking for a login cannot slow or break the
+rewrite.
+
+Change any of it for one run with flags on `sync`, `apply` and `compact`, or
+standing with environment variables (flag over environment):
+
+```sh
+agent sync --claude-model sonnet --claude-effort medium
+agent sync --synthesizer codex --codex-model gpt-5.5 --codex-effort high
+agent sync --claude-model fable,opus          # a shorter ladder
+AGENT_SYNC_CLAUDE_MODEL=opus agent sync       # the same, standing
+```
+
+| Setting | Flag | Environment |
+| --- | --- | --- |
+| Claude models (comma-separated ladder) | `--claude-model` | `AGENT_SYNC_CLAUDE_MODEL` |
+| Claude effort | `--claude-effort` | `AGENT_SYNC_CLAUDE_EFFORT` |
+| Codex models (comma-separated ladder) | `--codex-model` | `AGENT_SYNC_CODEX_MODEL` |
+| Codex effort | `--codex-effort` | `AGENT_SYNC_CODEX_EFFORT` |
+
+The model rewrites the whole file, so a synthesis takes minutes and prints
+nothing until it finishes. `sync` says what it is doing, a dot lands on
+stderr every 30 seconds on a terminal (`AGENT_SYNC_SYNTH_HEARTBEAT` seconds;
+0 turns it off), and a model still running after `AGENT_SYNC_SYNTH_TIMEOUT`
+seconds (default 1200; 0 for none) is stopped so the next rung runs instead
+of the sync hanging.
+
+One sync writes at a time. A second run started while another holds
+`~/.config/agent-sync/sync.lock` exits 1 naming the holder's pid (dry runs
+are not blocked); a lock left by a killed run is reclaimed. A file edited
+while the model ran is kept and distributed as edited rather than overwritten
+by a rewrite that never saw the edit; run `agent sync` again to synthesize
+it.
+
 ## Keeping the file small
 
 The synthesized file is read into every session on every tool, so its size

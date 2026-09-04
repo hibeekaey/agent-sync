@@ -165,6 +165,31 @@ installed agent's global instructions slot.
 	command that reads a merge prompt on stdin and prints the merged
 	document on stdout.
 
+*AGENT_SYNC_CLAUDE_MODEL*, *AGENT_SYNC_CLAUDE_EFFORT*
+	Claude's model ladder (comma-separated, tried in order; default
+	fable,opus,sonnet) and effort (default low) when it synthesizes;
+	the *--claude-model* and *--claude-effort* flags override them for
+	one run. The script decides the model rather than the CLI's own
+	setting so a sync behaves the same on every machine. A model that
+	is out of credits, unavailable or answers badly hands over to the
+	next; after the last, Codex is tried, then the deterministic merge.
+
+*AGENT_SYNC_CODEX_MODEL*, *AGENT_SYNC_CODEX_EFFORT*
+	The same for Codex (default gpt-5.6-terra,gpt-5.5,gpt-5.4 at low),
+	passed as *-m* and *-c model_reasoning_effort=*; *--codex-model*
+	and *--codex-effort* override them for one run.
+
+*AGENT_SYNC_SYNTH_HEARTBEAT*
+	Seconds between progress dots on standard error while a model
+	rewrites the file (default 30 when standard error is a terminal,
+	otherwise off; 0 turns it off).
+
+*AGENT_SYNC_SYNTH_TIMEOUT*
+	Seconds after which a still-running synthesis is stopped and the
+	fallback chain continues (default 1200; 0 disables the timeout).
+	One sync writes at a time: a run started while another holds
+	~/.config/agent-sync/sync.lock exits 1 naming the holder.
+
 *AGENT_SYNC_BUDGET*
 	Byte budget for the synthesized file (default 150000). Reported by
 	sync, enforced by status and doctor, restored by *compact*; the

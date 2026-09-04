@@ -9,7 +9,9 @@
 umask 077
 
 PROJECT_DIR=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
-AGENT_BIN="$PROJECT_DIR/bin/agent"
+# AGENT_BIN may point a suite at another build, e.g. the previous release, to
+# prove a new assertion fails without the change it guards.
+AGENT_BIN="${AGENT_BIN:-$PROJECT_DIR/bin/agent}"
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agent-sync-test.XXXXXXXX")
 AGENT_CONFIG_ROOT="$TEST_ROOT/config"
 CANON="$TEST_ROOT/canon.md"
@@ -121,19 +123,28 @@ run_agent_without_models() {
     "$AGENT_BIN" "$@"
 }
 
+# The exact command line agent-sync hands each vendor for the first rung of
+# its default ladder. The mocks refuse anything else (exit 2), so a flag
+# added or dropped in bin/agent fails the suite; they read the expectation
+# from a sidecar file because the JSON in --mcp-config does not survive being
+# quoted inside a quoted mock body.
+CLAUDE_SYNTH_ARGV='-p --no-session-persistence --permission-mode dontAsk --strict-mcp-config --mcp-config {"mcpServers":{}} --model fable --effort low'
+CODEX_SYNTH_ARGV='exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -c mcp_servers={} -m gpt-5.6-terra -c model_reasoning_effort=low -'
+
 write_claude_mock() {
   result="$1"
+  printf '%s\n' "$CLAUDE_SYNTH_ARGV" >"$MOCK_BIN/claude.argv"
   if [ "$result" = "success" ]; then
     printf '%s\n' \
       '#!/bin/sh' \
-      '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
+      '[ "$*" = "$(cat "$0.argv")" ] || exit 2' \
       'printf "claude\\n" >>"$SYNTH_LOG"' \
       'printf "# Claude synthesized memory\\n"' \
       'awk "f{print} /^--- DOCUMENT ---/{f=1}"' >"$MOCK_BIN/claude"
   else
     printf '%s\n' \
       '#!/bin/sh' \
-      '[ "$*" = "-p --no-session-persistence --permission-mode dontAsk" ] || exit 2' \
+      '[ "$*" = "$(cat "$0.argv")" ] || exit 2' \
       'printf "claude\\n" >>"$SYNTH_LOG"' \
       'exit 1' >"$MOCK_BIN/claude"
   fi
@@ -141,9 +152,10 @@ write_claude_mock() {
 }
 
 write_codex_mock() {
+  printf '%s\n' "$CODEX_SYNTH_ARGV" >"$MOCK_BIN/codex.argv"
   printf '%s\n' \
     '#!/bin/sh' \
-    '[ "$*" = "exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -" ] || exit 2' \
+    '[ "$*" = "$(cat "$0.argv")" ] || exit 2' \
     'printf "codex\\n" >>"$SYNTH_LOG"' \
     'printf "# Codex synthesized memory\\n"' \
     'awk "f{print} /^--- DOCUMENT ---/{f=1}"' >"$MOCK_BIN/codex"
