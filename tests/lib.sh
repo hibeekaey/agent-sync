@@ -84,6 +84,9 @@ run_agent_with_synthesizer() {
     "$AGENT_BIN" "$@"
 }
 
+# Whole-document scope on purpose: these suites test which vendor and model
+# ran, and a fold would answer a second sync of unchanged stores with no model
+# call at all. The fold path has its own suite, tests/fold_test.sh.
 run_agent_auto() {
   PATH="$SAFE_PATH" \
     TMPDIR="$TEST_TMPDIR" \
@@ -93,6 +96,7 @@ run_agent_auto() {
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
     AGENT_SYNC_SOURCE="$CANON" \
     AGENT_SYNC_SYNTHESIZER=auto \
+    AGENT_SYNC_REWRITE=1 \
     "$AGENT_BIN" "$@"
 }
 

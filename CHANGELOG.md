@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-09-04
+
+### Changed
+
+- A sync folds instead of rewriting. The model sees the file as read-only
+  context and the newly imported memories, and answers with only the
+  sections that change (an existing `## ` heading copied exactly, or
+  `## Promoted from <agent>`); agent-sync splices them in. A whole-document
+  rewrite made the model re-emit 148 KB to absorb a few lines and took ten
+  minutes; a fold answers in a fraction of that. An import block folded on an
+  earlier sync (same fingerprint, every identifier still in the curated text)
+  is dropped with no model call, so a sync with nothing new is free, and a
+  fact removed from the curated text by hand brings its block back for
+  folding. The answer is refused, and the next rung tried, when it is not
+  sections, echoes an import block, repeats a heading, shrinks a section past
+  70% (a fold adds), or drops an identifier; the whole-document identifier
+  guard and size floor still apply to the spliced result. `--rewrite` (or
+  `AGENT_SYNC_REWRITE=1`) asks for the old whole-document rewrite; a custom
+  synthesizer command keeps its whole-document contract.
+
 ## [1.8.1] - 2026-09-04
 
 ### Added

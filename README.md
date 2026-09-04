@@ -159,6 +159,20 @@ Automatic mode sends the synthesized memory document to the locally
 configured Claude Code account, then Codex if Claude is unavailable or fails.
 Use `--synthesizer deterministic` when the document must stay entirely local.
 
+A sync **folds** rather than rewrites. The model is shown the file as
+read-only context and the memories imported since the last synthesis, and
+answers with only the sections that change — an existing `## ` heading
+copied exactly, or `## Promoted from <agent>` for memories that fit nowhere
+else — which agent-sync splices back in. A block folded on an earlier sync
+(same fingerprint, every identifier still present in the curated text) is
+dropped with no model call, so a sync with nothing new costs nothing, and a
+fact you remove from the curated text by hand brings its block back for
+folding. An answer that is not sections, echoes an import block, repeats a
+heading, shrinks a section past 70% (a fold adds) or drops an identifier is
+refused and the next model tried. `agent sync --rewrite` (or
+`AGENT_SYNC_REWRITE=1`) asks for a rewrite of the whole document instead,
+which is the right tool for a deliberate tidy and takes minutes.
+
 | Selection | Behaviour |
 | --- | --- |
 | `auto` (default) | Try Claude, then Codex, then retain the deterministic merge |
@@ -220,12 +234,11 @@ AGENT_SYNC_CLAUDE_MODEL=opus agent sync       # the same, standing
 | Codex models (comma-separated ladder) | `--codex-model` | `AGENT_SYNC_CODEX_MODEL` |
 | Codex effort | `--codex-effort` | `AGENT_SYNC_CODEX_EFFORT` |
 
-The model rewrites the whole file, so a synthesis takes minutes and prints
-nothing until it finishes. `sync` says what it is doing, a dot lands on
-stderr every 30 seconds on a terminal (`AGENT_SYNC_SYNTH_HEARTBEAT` seconds;
-0 turns it off), and a model still running after `AGENT_SYNC_SYNTH_TIMEOUT`
-seconds (default 1200; 0 for none) is stopped so the next rung runs instead
-of the sync hanging.
+A model prints nothing until it finishes, and a `--rewrite` takes minutes.
+`sync` says what it is doing, a dot lands on stderr every 30 seconds on a
+terminal (`AGENT_SYNC_SYNTH_HEARTBEAT` seconds; 0 turns it off), and a model
+still running after `AGENT_SYNC_SYNTH_TIMEOUT` seconds (default 1200; 0 for
+none) is stopped so the next rung runs instead of the sync hanging.
 
 One sync writes at a time. A second run started while another holds
 `~/.config/agent-sync/sync.lock` exits 1 naming the holder's pid (dry runs

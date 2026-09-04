@@ -13,7 +13,7 @@ agent \- synchronize agent memory across AI coding agents
 .PP
 .SH SYNOPSIS
 .PP
-\fBagent\fR sync [\-\-synthesizer MODE] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
+\fBagent\fR sync [\-\-synthesizer MODE] [\-\-rewrite] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
 .br
 \fBagent\fR status
 .br
@@ -27,7 +27,7 @@ agent \- synchronize agent memory across AI coding agents
 .br
 \fBagent\fR gather [DIR]
 .br
-\fBagent\fR apply [DIR] [\-\-synthesizer MODE] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
+\fBagent\fR apply [DIR] [\-\-synthesizer MODE] [\-\-rewrite] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
 .br
 \fBagent\fR link [DIR] [\-\-import]
 .br
@@ -57,9 +57,13 @@ installed agent'\&s global instructions slot.\&
 .PP
 \fBsync\fR
 .RS 4
-Gather, synthesize, redistribute.\& The first time a pre\-existing file
-agent\-sync did not write would be overwritten, it is preserved beside
-the target as <file>.\&orig.\&
+Gather, synthesize, redistribute.\& The model sees the synthesized file
+and the newly imported memories and answers with only the sections that
+change, which agent\-sync splices in; a memory block folded on an earlier
+sync is dropped without a model call.\& \fB\-\-rewrite\fR asks for a rewrite of
+the whole file instead.\& The first time a pre\-existing file agent\-sync
+did not write would be overwritten, it is preserved beside the target
+as <file>.\&orig.\&
 .PP
 .RE
 \fBcompact\fR [\-\-budget BYTES] [\-\-jobs N] [\-\-synthesizer MODE] [\-\-force] [\-\-keep\-all] [\-\-dry\-run]
