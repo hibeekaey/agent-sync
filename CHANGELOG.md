@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-09-04
+
+### Changed
+
+- A sync keeps the file under budget. When a model synthesis leaves the
+  file over `AGENT_SYNC_BUDGET`, the same run trims it back: never on the
+  deterministic path (a hook stays fast), never touching an imported block
+  or archiving a store, and the `.bak` the synthesis wrote stays the
+  pre-sync file. `--no-compact` or `AGENT_SYNC_COMPACT=0` skips it.
+- Compaction plans largest-first instead of shaving every section by the
+  same percentage. Round one asks the biggest candidates for at most a 30%
+  cut until the deficit is covered (an import, when `compact` is run by
+  hand, is always promoted, with a lighter first ask and never planned below
+  a quarter of its size); only when that is not enough does round two deepen
+  the same sections toward the floors. A small overrun costs one or two
+  large appendices a light trim and leaves the dense small sections alone,
+  where the old plan took 8% off every section including the rule tables.
+
 ## [1.9.0] - 2026-09-04
 
 ### Changed
