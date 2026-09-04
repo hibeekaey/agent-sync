@@ -181,6 +181,30 @@ and long id of the document still present), the previous file is kept at
 merge. A recursion guard stops a synthesizer-spawned agent from re-entering
 agent-sync.
 
+The model rewrites the whole file, so a synthesis takes minutes and prints
+nothing until it finishes. `sync` says what it is doing, a dot lands on
+stderr every 30 seconds on a terminal (`AGENT_SYNC_SYNTH_HEARTBEAT` seconds;
+0 turns it off), and a model still running after `AGENT_SYNC_SYNTH_TIMEOUT`
+seconds (default 1200; 0 for none) is stopped so the fallback chain runs
+instead of the sync hanging. The work is mostly copying the document back
+out, so a faster model at low effort finishes in a fraction of the time:
+
+```sh
+AGENT_SYNC_CLAUDE_MODEL=sonnet AGENT_SYNC_CLAUDE_EFFORT=low agent sync
+```
+
+`AGENT_SYNC_CLAUDE_MODEL` and `AGENT_SYNC_CLAUDE_EFFORT` become Claude's
+`--model` and `--effort`; `AGENT_SYNC_CODEX_MODEL` and
+`AGENT_SYNC_CODEX_EFFORT` become Codex's `-m` and `-c
+model_reasoning_effort=`. Unset, each CLI uses its configured default.
+
+One sync writes at a time. A second run started while another holds
+`~/.config/agent-sync/sync.lock` exits 1 naming the holder's pid (dry runs
+are not blocked); a lock left by a killed run is reclaimed. A file edited
+while the model ran is kept and distributed as edited rather than overwritten
+by a rewrite that never saw the edit; run `agent sync` again to synthesize
+it.
+
 ## Keeping the file small
 
 The synthesized file is read into every session on every tool, so its size

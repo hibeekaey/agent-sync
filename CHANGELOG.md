@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-09-04
+
+### Added
+
+- Progress and a stop clock for the model call. A whole-document rewrite
+  prints nothing until its last token, so an eight-minute synthesis read as
+  a hang; `sync` now says what it is doing, a dot lands on stderr every 30
+  seconds on a terminal (`AGENT_SYNC_SYNTH_HEARTBEAT`), and a model still
+  running after `AGENT_SYNC_SYNTH_TIMEOUT` seconds (default 1200) is stopped
+  so the fallback chain runs instead of the sync hanging.
+- Model and effort for the synthesizer: `AGENT_SYNC_CLAUDE_MODEL`,
+  `AGENT_SYNC_CLAUDE_EFFORT`, `AGENT_SYNC_CODEX_MODEL` and
+  `AGENT_SYNC_CODEX_EFFORT`. The work is mostly copying the document back
+  out, so a faster model at low effort cuts the run to a fraction.
+- One sync writes at a time. A second run started while another holds
+  `~/.config/agent-sync/sync.lock` exits 1 naming the holder's pid; a lock
+  left by a killed run is reclaimed. Dry runs are not blocked.
+
+### Fixed
+
+- The keep rules never reached the synthesizer: `$(compact_keep_rules)` sat
+  inside a quoted heredoc, so the prompt carried that literal text instead
+  of the rules on what to keep and what may be forgotten.
+- A file edited while the model ran (a hook firing, an editor) was
+  overwritten by a rewrite that never saw the edit. The edited file is now
+  kept and distributed, and the message says to run `agent sync` again.
+
 ## [1.8.0] - 2026-09-04
 
 ### Added

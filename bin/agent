@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.8.0"
+VERSION="1.8.1"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -45,6 +45,9 @@ SKILL_STATE_TMP=""
 IMPORTED_COUNT=0
 SYNTHESIZER_REQUEST=""
 SYNTHESIZER_FROM_CLI=0
+SYNC_LOCK=""
+SYNTH_SRC_SUM=""
+SYNTH_QUIET=0
 
 # Colour is strictly additive: the escapes stay empty unless stdout is a
 # terminal, so pipes, redirection, cron and CI keep byte-identical output.
@@ -109,6 +112,7 @@ cleanup() {
   [ -z "$SKILL_BACKUP" ] || rm -rf "$SKILL_BACKUP"
   [ -z "$SKILL_STATE_TMP" ] || rm -f "$SKILL_STATE_TMP"
   [ -z "$PRIVATE_TMP" ] || rm -rf "$PRIVATE_TMP"
+  [ -z "$SYNC_LOCK" ] || rm -f "$SYNC_LOCK"
 }
 
 trap cleanup 0
@@ -200,6 +204,15 @@ Claude, then Codex, then keeps the deterministic merge. Select a mode with
 --synthesizer MODE or AGENT_SYNC_SYNTHESIZER. The environment variable also
 accepts a custom command that reads a merge prompt and prints the document:
   AGENT_SYNC_SYNTHESIZER='claude -p' agent sync
+A synthesis is the model rewriting the whole file, so it takes minutes and
+runs fastest on a fast model at low effort; AGENT_SYNC_CLAUDE_MODEL,
+AGENT_SYNC_CLAUDE_EFFORT, AGENT_SYNC_CODEX_MODEL and AGENT_SYNC_CODEX_EFFORT
+pass --model/--effort (Claude) and -m/-c model_reasoning_effort (Codex).
+While it runs a dot lands on stderr every AGENT_SYNC_SYNTH_HEARTBEAT seconds
+(30 on a terminal, off otherwise), and AGENT_SYNC_SYNTH_TIMEOUT seconds
+(default $SYNTH_TIMEOUT_DEFAULT, 0 for none) stops a stuck model so the fallback runs.
+One sync writes at a time: a second run started while one holds
+$STATE_DIR/sync.lock exits 1.
 
 Size budget: the synthesized file is read into every session on every tool,
 so sync, status and doctor report its size against AGENT_SYNC_BUDGET
@@ -589,30 +602,103 @@ strip_synth_preamble() {
   mv "$sp_out.trimmed" "$sp_out"
 }
 
+# The vendor command lines live in exactly one place. Model and effort are
+# opt-in (AGENT_SYNC_CLAUDE_MODEL / AGENT_SYNC_CLAUDE_EFFORT for Claude,
+# AGENT_SYNC_CODEX_MODEL / AGENT_SYNC_CODEX_EFFORT for Codex): a synthesis is
+# mostly the model copying the document back out, so a faster model at low
+# effort finishes in a fraction of the time the vendor default takes. Unset,
+# each CLI uses its own configured default, as before.
+synth_command() {
+  export AGENT_SYNC_ACTIVE=1
+  case "$1" in
+    claude)
+      set -- claude -p --no-session-persistence --permission-mode dontAsk
+      [ -z "${AGENT_SYNC_CLAUDE_MODEL:-}" ] || set -- "$@" --model "$AGENT_SYNC_CLAUDE_MODEL"
+      [ -z "${AGENT_SYNC_CLAUDE_EFFORT:-}" ] || set -- "$@" --effort "$AGENT_SYNC_CLAUDE_EFFORT"
+      exec "$@"
+      ;;
+    codex)
+      set -- codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never
+      [ -z "${AGENT_SYNC_CODEX_MODEL:-}" ] || set -- "$@" -m "$AGENT_SYNC_CODEX_MODEL"
+      [ -z "${AGENT_SYNC_CODEX_EFFORT:-}" ] || set -- "$@" -c "model_reasoning_effort=$AGENT_SYNC_CODEX_EFFORT"
+      exec "$@" -
+      ;;
+    custom)
+      exec sh -c "$SYNTHESIZER_REQUEST"
+      ;;
+  esac
+}
+
+# A whole-document rewrite is minutes of silence from the vendor: it prints
+# nothing until the last token, so a run looks hung long before it is. The
+# heartbeat is a dot on stderr every AGENT_SYNC_SYNTH_HEARTBEAT seconds (30 on
+# a terminal, off otherwise; compact's parallel workers stay quiet). The
+# timeout stops a vendor that really is stuck after AGENT_SYNC_SYNTH_TIMEOUT
+# seconds (0 disables) so the fallback chain runs instead of the sync hanging.
+SYNTH_TIMEOUT_DEFAULT=1200
+SYNTH_HEARTBEAT_DEFAULT=30
+
+synth_seconds() {
+  case "$1" in
+    '' | *[!0-9]*)
+      echo "${C_ERR}agent:${C_OFF} $2 must be a whole number of seconds, got: $1" >&2
+      exit 2
+      ;;
+  esac
+  printf '%s' "$1"
+}
+
+synth_timeout() {
+  synth_seconds "${AGENT_SYNC_SYNTH_TIMEOUT:-$SYNTH_TIMEOUT_DEFAULT}" AGENT_SYNC_SYNTH_TIMEOUT
+}
+
+synth_heartbeat() {
+  if [ -n "${AGENT_SYNC_SYNTH_HEARTBEAT:-}" ]; then
+    synth_seconds "$AGENT_SYNC_SYNTH_HEARTBEAT" AGENT_SYNC_SYNTH_HEARTBEAT
+  elif [ "$SYNTH_QUIET" -eq 0 ] && [ -t 2 ]; then
+    printf '%s' "$SYNTH_HEARTBEAT_DEFAULT"
+  else
+    printf 0
+  fi
+}
+
 # Run one model call: the prompt on stdin, the document on stdout. Shared by
-# the whole-document synthesis and by compact's per-section rewrites, so the
-# vendor flags live in exactly one place.
+# the whole-document synthesis and by compact's per-section rewrites. The
+# vendor runs in the background so this shell can beat and stop the clock.
 invoke_synthesizer() {
   kind="$1"
   prompt="$2"
   out="$3"
   : >"$out"
+  is_timeout=$(synth_timeout)
+  is_beat=$(synth_heartbeat)
+  synth_command "$kind" <"$prompt" >"$out" &
+  is_pid=$!
+  is_waited=0
+  is_since_beat=0
+  is_beats=0
+  while kill -0 "$is_pid" 2>/dev/null; do
+    sleep 1
+    is_waited=$((is_waited + 1))
+    is_since_beat=$((is_since_beat + 1))
+    if [ "$is_timeout" -gt 0 ] && [ "$is_waited" -ge "$is_timeout" ]; then
+      kill "$is_pid" 2>/dev/null || true
+      sleep 2
+      kill -9 "$is_pid" 2>/dev/null || true
+      wait "$is_pid" 2>/dev/null || true
+      [ "$is_beats" -eq 0 ] || echo >&2
+      echo "${C_ERR}agent:${C_OFF} $kind synthesis ran past ${is_timeout}s and was stopped (AGENT_SYNC_SYNTH_TIMEOUT)" >&2
+      return 1
+    fi
+    if [ "$is_beat" -gt 0 ] && [ "$is_since_beat" -ge "$is_beat" ]; then
+      is_since_beat=0
+      is_beats=$((is_beats + 1))
+      printf '.' >&2
+    fi
+  done
   run_status=0
-  case "$kind" in
-    claude)
-      AGENT_SYNC_ACTIVE=1 claude -p --no-session-persistence \
-        --permission-mode dontAsk <"$prompt" >"$out" || run_status=$?
-      ;;
-    codex)
-      AGENT_SYNC_ACTIVE=1 codex exec --skip-git-repo-check \
-        --sandbox read-only --ephemeral --color never - <"$prompt" >"$out" ||
-        run_status=$?
-      ;;
-    custom)
-      AGENT_SYNC_ACTIVE=1 sh -c "$SYNTHESIZER_REQUEST" <"$prompt" >"$out" ||
-        run_status=$?
-      ;;
-  esac
+  wait "$is_pid" || run_status=$?
+  [ "$is_beats" -eq 0 ] || echo >&2
   [ "$run_status" -eq 0 ]
 }
 
@@ -620,6 +706,7 @@ try_synthesizer() {
   kind="$1"
   prompt="$2"
   out="$3"
+  echo "${C_PLAN}synthesis via $kind:${C_OFF} ${C_DIM}whole-document rewrite, usually several minutes${C_OFF}"
   invoke_synthesizer "$kind" "$prompt" "$out" || return 1
   strip_synth_preamble "$out"
   valid_synth_output "$out" "$SRC" || return 1
@@ -633,9 +720,17 @@ try_synthesizer() {
   fi
 }
 
+# The synthesis read one version of the file and took minutes; an edit landing
+# in between (a hook, an editor, a store folded in by hand) would be silently
+# overwritten by a rewrite that never saw it. Keep the edited file, which the
+# deterministic merge already holds, and distribute that instead.
 accept_synth_output() {
   kind="$1"
   out="$2"
+  if [ -n "$SYNTH_SRC_SUM" ] && [ "$(cksum <"$SRC")" != "$SYNTH_SRC_SUM" ]; then
+    echo "${C_ERR}agent:${C_OFF} $SRC changed while the $kind synthesis ran; keeping the deterministic merge (run agent sync again to synthesize it)" >&2
+    return 0
+  fi
   CANON_TMP=$(mktemp "$(dirname "$SRC")/.agent-sync.XXXXXXXX") || {
     echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $SRC" >&2
     exit 1
@@ -675,13 +770,20 @@ non-duplicated facts from the imported sections into the curated sections,
 drop noise and duplicates, resolve conflicts in favor of the newest
 information, keep the document's structure and voice, and remove the
 imported sections you fold in.
-$(compact_keep_rules)
-Print ONLY the new markdown document.
 EOF
+    compact_keep_rules
+    echo 'Print ONLY the new markdown document.'
     echo
     echo '--- DOCUMENT ---'
     cat "$SRC"
   } >"$prompt"
+  SYNTH_SRC_SUM=$(cksum <"$SRC")
+  synth_hb=$(synth_heartbeat)
+  synth_to=$(synth_timeout)
+  synth_note="stops after ${synth_to}s (AGENT_SYNC_SYNTH_TIMEOUT)"
+  [ "$synth_to" -gt 0 ] || synth_note="no timeout (AGENT_SYNC_SYNTH_TIMEOUT=0)"
+  [ "$synth_hb" -eq 0 ] || synth_note="a dot every ${synth_hb}s while it runs; $synth_note"
+  echo "${C_DIM}synthesis: $synth_note${C_OFF}"
   case "$SYNTHESIZER_REQUEST" in
     auto)
       for kind in claude codex; do
@@ -1211,6 +1313,8 @@ cmd_compact() {
     return 2
   fi
   require_selected_synthesizer
+  acquire_sync_lock || return 1
+  SYNTH_QUIET=1
   case "$SYNTHESIZER_REQUEST" in
     auto)
       COMPACT_KIND=""
@@ -1431,9 +1535,52 @@ cmd_sync() {
   sync_after_options
 }
 
+# One writer at a time. A semantic sync holds the file for minutes; a second
+# run started inside that window (a hook firing on an edit, a cron tick,
+# another terminal) would gather, synthesize and distribute over it, and the
+# .bak would end up holding the other run's output instead of the original.
+# The lock names its holder, so one left behind by a killed run is recognised
+# and reclaimed rather than blocking every sync until someone deletes it.
+acquire_sync_lock() {
+  [ "$DRY_RUN" -eq 0 ] || return 0
+  asl_lock="$STATE_DIR/sync.lock"
+  mkdir -p "$STATE_DIR"
+  asl_tries=0
+  while [ "$asl_tries" -lt 5 ]; do
+    asl_tries=$((asl_tries + 1))
+    if (set -C && printf '%s\n' "$$" >"$asl_lock") 2>/dev/null; then
+      SYNC_LOCK="$asl_lock"
+      return 0
+    fi
+    asl_holder=$(head -1 "$asl_lock" 2>/dev/null || true)
+    case "$asl_holder" in
+      '')
+        # Another run created it this instant and has not written its pid
+        # yet, or the lock vanished between the two reads: look again.
+        sleep 1
+        continue
+        ;;
+      *[!0-9]*)
+        echo "${C_WARN}agent:${C_OFF} discarding an unreadable lock at $asl_lock" >&2
+        rm -f "$asl_lock"
+        continue
+        ;;
+    esac
+    if kill -0 "$asl_holder" 2>/dev/null; then
+      echo "${C_ERR}agent:${C_OFF} another agent run (pid $asl_holder) is already syncing $SRC; try again when it finishes" >&2
+      return 1
+    fi
+    echo "${C_WARN}agent:${C_OFF} reclaiming a lock left by pid $asl_holder, which is no longer running" >&2
+    rm -f "$asl_lock"
+  done
+  echo "${C_ERR}agent:${C_OFF} could not acquire $asl_lock" >&2
+  return 1
+}
+
 sync_after_options() {
   require_src
   require_selected_synthesizer
+  acquire_sync_lock || exit 1
   for name in claude codex cursor continue windsurf goose; do
     validate_import_section "$name"
   done
@@ -1514,6 +1661,7 @@ cmd_migrate() {
     exit 2
   fi
   require_src
+  acquire_sync_lock || exit 1
   validate_import_section "$from"
   import_agent "$from"
   n="$IMPORTED_COUNT"

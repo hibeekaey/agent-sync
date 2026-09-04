@@ -165,6 +165,27 @@ installed agent's global instructions slot.
 	command that reads a merge prompt on stdin and prints the merged
 	document on stdout.
 
+*AGENT_SYNC_CLAUDE_MODEL*, *AGENT_SYNC_CLAUDE_EFFORT*
+	Passed to Claude as *--model* and *--effort* when it synthesizes.
+	Unset, Claude Code's configured default applies. A synthesis is
+	mostly the model copying the document back out, so a fast model at
+	low effort finishes in a fraction of the time.
+
+*AGENT_SYNC_CODEX_MODEL*, *AGENT_SYNC_CODEX_EFFORT*
+	Passed to Codex as *-m* and *-c model_reasoning_effort=* when it
+	synthesizes. Unset, the Codex configuration applies.
+
+*AGENT_SYNC_SYNTH_HEARTBEAT*
+	Seconds between progress dots on standard error while a model
+	rewrites the file (default 30 when standard error is a terminal,
+	otherwise off; 0 turns it off).
+
+*AGENT_SYNC_SYNTH_TIMEOUT*
+	Seconds after which a still-running synthesis is stopped and the
+	fallback chain continues (default 1200; 0 disables the timeout).
+	One sync writes at a time: a run started while another holds
+	~/.config/agent-sync/sync.lock exits 1 naming the holder.
+
 *AGENT_SYNC_BUDGET*
 	Byte budget for the synthesized file (default 150000). Reported by
 	sync, enforced by status and doctor, restored by *compact*; the

@@ -227,6 +227,35 @@ command that reads a merge prompt on stdin and prints the merged
 document on stdout.\&
 .PP
 .RE
+\fBAGENT_SYNC_CLAUDE_MODEL\fR, \fBAGENT_SYNC_CLAUDE_EFFORT\fR
+.RS 4
+Passed to Claude as \fB\-\-model\fR and \fB\-\-effort\fR when it synthesizes.\&
+Unset, Claude Code'\&s configured default applies.\& A synthesis is
+mostly the model copying the document back out, so a fast model at
+low effort finishes in a fraction of the time.\&
+.PP
+.RE
+\fBAGENT_SYNC_CODEX_MODEL\fR, \fBAGENT_SYNC_CODEX_EFFORT\fR
+.RS 4
+Passed to Codex as \fB\-m\fR and \fB\-c model_reasoning_effort=\fR when it
+synthesizes.\& Unset, the Codex configuration applies.\&
+.PP
+.RE
+\fBAGENT_SYNC_SYNTH_HEARTBEAT\fR
+.RS 4
+Seconds between progress dots on standard error while a model
+rewrites the file (default 30 when standard error is a terminal,
+otherwise off; 0 turns it off).\&
+.PP
+.RE
+\fBAGENT_SYNC_SYNTH_TIMEOUT\fR
+.RS 4
+Seconds after which a still\-running synthesis is stopped and the
+fallback chain continues (default 1200; 0 disables the timeout).\&
+One sync writes at a time: a run started while another holds
+\(ti/.\&config/agent\-sync/sync.\&lock exits 1 naming the holder.\&
+.PP
+.RE
 \fBAGENT_SYNC_BUDGET\fR
 .RS 4
 Byte budget for the synthesized file (default 150000).\& Reported by

@@ -9,7 +9,9 @@
 umask 077
 
 PROJECT_DIR=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
-AGENT_BIN="$PROJECT_DIR/bin/agent"
+# AGENT_BIN may point a suite at another build, e.g. the previous release, to
+# prove a new assertion fails without the change it guards.
+AGENT_BIN="${AGENT_BIN:-$PROJECT_DIR/bin/agent}"
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agent-sync-test.XXXXXXXX")
 AGENT_CONFIG_ROOT="$TEST_ROOT/config"
 CANON="$TEST_ROOT/canon.md"
