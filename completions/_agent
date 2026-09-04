@@ -77,6 +77,7 @@ _agent() {
         '--force[compact even while within budget]' \
         '--keep-all[forbid forgetting; protect every letter-and-digit token]' \
         '--budget=[byte budget for the synthesized file]:bytes' \
+        '--jobs=[sections rewritten concurrently]:count' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex)' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]'

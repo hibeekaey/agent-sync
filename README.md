@@ -192,13 +192,14 @@ budget (150 KB by default, `AGENT_SYNC_BUDGET` or `--budget` to change it):
 agent compact             # exits at once while the file is within budget
 agent compact --dry-run   # the plan: which sections shrink, to what size
 agent compact --force     # compact anyway
+agent compact --jobs 8    # rewrite eight sections at a time (default 4)
 ```
 
 When the file is over budget, each raw imported section is promoted into
 curated notes (`## Promoted from claude`) and its store files are archived
 to `~/.config/agent-sync/archive/` and removed, so the next sync has nothing
 to re-import. Then every curated section of 2 KB or more is rewritten
-shorter by the model, one section at a time. A rewrite may forget how a
+shorter by the model, up to the selected job count at a time. A rewrite may forget how a
 lesson was learned, items marked settled, refuted, muted or parked, one-off
 references (commit shas, PR numbers, run ids, past versions) and anything
 else of low value, but it is refused and the section kept unless it starts
@@ -212,6 +213,10 @@ forgetting and protects every backtick span and bare letter-and-digit
 token. `sync` reports the size after every run; `status`
 and `doctor` fail while the file is over budget. `compact` needs a model and
 rejects `--synthesizer deterministic`.
+
+Only store versions captured by the preceding `sync` are archived. A store
+created or changed while compaction runs stays live and is folded on the next
+sync.
 
 ## Automating
 

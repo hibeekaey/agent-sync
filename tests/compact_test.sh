@@ -17,6 +17,13 @@ mode="$1"
 printf 'call %s\n' "$mode" >>"$SYNTH_LOG"
 prompt=$(cat)
 [ "$mode" = fail ] && exit 1
+if [ "$mode" = late ]; then
+  mkdir -p "$AGENT_SYNC_HOME/.claude/projects/project-b/memory"
+  printf 'A late store carries LATE_STORE_TOKEN.\n' >"$AGENT_SYNC_HOME/.claude/projects/project-b/memory/shared.md"
+fi
+if [ "$mode" = changed ]; then
+  printf 'A changed store carries CHANGED_STORE_TOKEN.\n' >"$AGENT_SYNC_HOME/.claude/projects/project-a/memory/shared.md"
+fi
 target=$(printf '%s\n' "$prompt" | sed -n 's/.*at most \([0-9][0-9]*\) bytes\.$/\1/p' | head -1)
 heading=$(printf '%s\n' "$prompt" | sed -n 's/^- The first line of your output must be exactly: //p')
 body=$(printf '%s\n' "$prompt" | awk 'f{print} /^--- SECTION ---/{f=1}')
@@ -36,14 +43,19 @@ printf '%s\n' "$first"
 told=0
 printf '%s\n' "$prompt" | grep -q 'previous attempt dropped the following' && told=1
 printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v told="$told" -v n="$(printf '%s\n' "$first" | wc -c)" '
-  /^---$/ { fm = !fm; next }
+  /^### / { after = 1; next }
+  after && /^$/ { next }
+  after && /^---$/ { fm = 1; after = 0; next }
+  after { after = 0 }
+  fm && /^---$/ { fm = 0; next }
   fm { next }
-  /^### / { next }
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
   mode == "learn" && !told && /G-Z3LXJSB0MB/ { next }
   mode == "hex" && /0E0E0E/ { next }
   mode == "forget" && /0E0E0E|Fixed in commit|Learned the hard way|Tokens live in/ { next }
   mode == "host" && /meter-proxy/ { next }
+  mode == "plain" && /Plain routing/ { next }
+  mode == "separator" && /plain-store/ { next }
   mode == "prose" && /146-account/ { next }
   mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
   /`|https?:\/\/|[0-9]/ { print; n += length($0) + 1; next }
@@ -104,12 +116,14 @@ write_fixture() {
     printf -- '- Fixed in commit %sde3e1c3%s for PR #93 on 2026-08-30, released as %sv1.2.1%s.\n' "$bt" "$bt" "$bt" "$bt"
     printf -- '- Tokens live in %ssrc/config/tokens.ts%s beside %sscripts/check-tokens.mjs%s.\n' "$bt" "$bt" "$bt" "$bt"
     printf -- '- Learned the hard way: %scountryHintFrom%s once wrote raw %sNG%s and %sT1%s into the column.\n' "$bt" "$bt" "$bt" "$bt" "$bt" "$bt"
-    printf -- '- The relay answers at %smeter-proxy.estate-example.io%s and reads %sORIGIN_PROOF_SECRET%s; a demo ran at http://localhost:3000/demo.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt"
+    printf -- '- The relay answers at %smeter-proxy.estate-example.io%s and reads %sORIGIN_PROOF_SECRET%s; a demo ran at http://localhost:3000/demo.\n' "$bt" "$bt" "$bt" "$bt"
+    printf -- '- Plain routing uses live-gateway.cuesoft-fixture.io with PLAIN_ORIGIN_SECRET and stream-9z4x.\n\n## Small\n\none line\n'
   } >"$CANON"
   mkdir -p "$(dirname "$CLAUDE_A")"
   {
     printf -- '---\nname: shared\ndescription: an imported store\nmetadata:\n  originSessionId: 3ab3c336-8985-4994-8e44-bc906079c304\n---\n\n'
     printf 'The Google Ads tag is %sAW-11072965548%s and the endpoint is https://ads.example/v9/tag.\n' "$bt" "$bt"
+    printf -- '---\nThe plain-store.cuesoft-fixture.io endpoint needs STORE_ORIGIN_SECRET and stream-4q9z.\n'
     i=0
     while [ "$i" -lt 12 ]; do
       printf 'Narrative about how the session went, which nobody needs to keep.\n'
@@ -190,6 +204,24 @@ run_agent sync >/dev/null
 cmp -s "$CANON" "$TEST_ROOT/canon.compacted" || fail 'the sync after compact re-imported the archived store'
 run_agent status >/dev/null || fail 'status failed after a successful compact'
 
+# A source created while the model is rewriting was never part of the import.
+# Compact must leave it live for the next sync rather than silently archiving it.
+write_fixture
+run_compact late --budget 2800 >"$TEST_ROOT/late.out" || fail "compact lost a late store: $(cat "$TEST_ROOT/late.out")"
+[ -f "$CLAUDE_B" ] || fail 'compact archived a store that was created after sync'
+assert_contains "$CLAUDE_B" 'LATE_STORE_TOKEN'
+run_agent sync >/dev/null
+assert_contains "$CANON" 'LATE_STORE_TOKEN'
+
+# A store represented by the import may still change while its section is
+# rewritten. Its new contents must also remain live for the next sync.
+write_fixture
+run_compact changed --budget 2800 >"$TEST_ROOT/changed.out" 2>&1 || fail "compact failed after preserving a changed store: $(cat "$TEST_ROOT/changed.out")"
+[ -f "$CLAUDE_A" ] || fail 'compact archived a store that changed after sync'
+assert_contains "$CLAUDE_A" 'CHANGED_STORE_TOKEN'
+run_agent sync >/dev/null
+assert_contains "$CANON" 'CHANGED_STORE_TOKEN'
+
 # Prose is not an identifier: a rewrite may rephrase "146-account", "429ing"
 # and the text between a broken span's closing backtick and the next opening
 # one, so dropping those lines is accepted, while badge/P<n>- must survive.
@@ -200,6 +232,40 @@ assert_not_contains "$CANON" 'compare it to HEAD'
 assert_contains "$CANON" 'badge/P<n>-'
 assert_contains "$CANON" '<sha>'
 assert_not_contains "$TEST_ROOT/prose.out" 'kept'
+
+# Concurrency changes the schedule, not the result: three at a time yields the
+# same canon, reports document order, and never loses the next PID after a
+# full worker window.
+add_fourth_section() {
+  {
+    printf '\n## More\n\n'
+    i=0
+    while [ "$i" -lt 40 ]; do
+      printf 'Another long section that must be compacted through the model.\n'
+      i=$((i + 1))
+    done
+  } >>"$CANON"
+}
+write_fixture
+add_fourth_section
+: >"$SYNTH_LOG"
+run_compact good --jobs 1 --budget 3600 >"$TEST_ROOT/jobs-sequential.out" || fail "compact --jobs 1 exited nonzero: $(cat "$TEST_ROOT/jobs-sequential.out")"
+cp "$CANON" "$TEST_ROOT/canon.jobs-sequential"
+write_fixture
+add_fourth_section
+: >"$SYNTH_LOG"
+run_compact good --jobs 3 --budget 3600 >"$TEST_ROOT/jobs.out" 2>"$TEST_ROOT/jobs.err" || fail "compact --jobs 3 exited nonzero: $(cat "$TEST_ROOT/jobs.out")"
+cmp -s "$CANON" "$TEST_ROOT/canon.jobs-sequential" || fail 'compact --jobs 3 produced a different canon from the sequential run'
+assert_contains "$TEST_ROOT/jobs.out" 'jobs: 3)'
+assert_not_contains "$TEST_ROOT/jobs.err" 'not a pid'
+r=$(grep -n '^## Rules: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); c=$(grep -n '^## Colours: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); m=$(grep -n '^## More: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); i=$(grep -n '^import:claude: ' "$TEST_ROOT/jobs.out" | cut -d: -f1)
+if ! { [ "$r" -lt "$c" ] && [ "$c" -lt "$i" ] && [ "$i" -lt "$m" ]; }; then
+  fail "report is not in document order: Rules=$r Colours=$c More=$m Import=$i"
+fi
+if run_compact good --jobs 0 --budget 2800 >"$TEST_ROOT/jobs0.out" 2>&1; then
+  fail 'compact accepted --jobs 0'
+fi
+assert_contains "$TEST_ROOT/jobs0.out" 'jobs must be a positive number'
 
 # Falsify the identifier guard: a rewrite that drops G-Z3LXJSB0MB is refused
 # and the section is kept verbatim, so the file stays over budget (exit 1).
@@ -223,7 +289,27 @@ assert_not_contains "$CANON" 'Fixed in commit'
 assert_not_contains "$CANON" 'countryHintFrom'
 assert_not_contains "$CANON" 'src/config/tokens.ts'
 assert_contains "$CANON" 'meter-proxy.estate-example.io'
-assert_contains "$TEST_ROOT/forget.out" '(mode: stable)'
+assert_contains "$TEST_ROOT/forget.out" '(mode: stable,'
+
+# Stable mode protects real identifiers even when prose, not backticks, carries
+# them. The model is allowed to rephrase the surrounding sentence, not drop it.
+write_fixture
+if run_compact plain --budget 2800 >"$TEST_ROOT/plain.out" 2>&1; then
+  fail 'compact accepted a rewrite that dropped plain stable identifiers'
+fi
+assert_contains "$TEST_ROOT/plain.out" 'live-gateway.cuesoft-fixture.io'
+assert_contains "$TEST_ROOT/plain.out" 'PLAIN_ORIGIN_SECRET'
+assert_contains "$TEST_ROOT/plain.out" 'stream-9z4x'
+
+# A Markdown horizontal rule after imported YAML frontmatter is content, not a
+# second frontmatter delimiter that can hide every following identifier.
+write_fixture
+if run_compact separator --budget 2800 >"$TEST_ROOT/separator.out" 2>&1; then
+  fail 'compact accepted a rewrite that dropped identifiers after a Markdown rule'
+fi
+assert_contains "$TEST_ROOT/separator.out" 'plain-store.cuesoft-fixture.io'
+assert_contains "$TEST_ROOT/separator.out" 'STORE_ORIGIN_SECRET'
+assert_contains "$TEST_ROOT/separator.out" 'stream-4q9z'
 # ...but a hostname, an environment variable name and a real URL may not go,
 # while a localhost URL on the same line is not what keeps it.
 write_fixture

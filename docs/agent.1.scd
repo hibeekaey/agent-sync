@@ -40,7 +40,7 @@ installed agent's global instructions slot.
 	agent-sync did not write would be overwritten, it is preserved beside
 	the target as <file>.orig.
 
-*compact* [--budget BYTES] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
+*compact* [--budget BYTES] [--jobs N] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
 	Keep the synthesized file under a byte budget (default 150000, see
 	*AGENT_SYNC_BUDGET*). Exits at once while the file is within budget
 	unless *--force*. Otherwise each raw imported section is promoted into
@@ -56,9 +56,11 @@ installed agent's global instructions slot.
 	variable and long id of the original (paths, commands and code words are
 	asked for but may go with a story the rewrite forgets). A rewrite that drops one gets a
 	second attempt naming what it lost. *--keep-all* forbids forgetting and
-	protects every backtick span and bare letter-and-digit token. Needs a
-	model: *deterministic* is rejected. The previous file is kept at
-	<file>.bak. Exits 1 when the file is still over budget afterwards.
+	protects every backtick span and bare letter-and-digit token. Sections
+	are rewritten *--jobs* at a time (default 4, or *AGENT_SYNC_COMPACT_JOBS*),
+	each a model call of a minute or more. Needs a model: *deterministic* is
+	rejected. The previous file is kept at <file>.bak. Exits 1 when the file
+	is still over budget afterwards.
 
 *status*
 	Per-agent parity check. Exits 1 when anything is stale or the
@@ -167,6 +169,10 @@ installed agent's global instructions slot.
 	Byte budget for the synthesized file (default 150000). Reported by
 	sync, enforced by status and doctor, restored by *compact*; the
 	*--budget* flag of *compact* overrides it for one run.
+
+*AGENT_SYNC_COMPACT_JOBS*
+	How many sections *compact* rewrites at once (default 4); *--jobs*
+	overrides it for one run.
 
 *AGENT_SYNC_ONLY*, *AGENT_SYNC_SKIP*
 	Comma-separated target filters used by sync, apply, status, diff, MCP sync
