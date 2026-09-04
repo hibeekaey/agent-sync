@@ -42,8 +42,8 @@ printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v told="$told" -v n=
   mode == "drop" && /G-Z3LXJSB0MB/ { next }
   mode == "learn" && !told && /G-Z3LXJSB0MB/ { next }
   mode == "hex" && /0E0E0E/ { next }
-  mode == "forget" && /0E0E0E|Fixed in commit|Learned the hard way/ { next }
-  mode == "path" && /tokens.ts/ { next }
+  mode == "forget" && /0E0E0E|Fixed in commit|Learned the hard way|Tokens live in/ { next }
+  mode == "host" && /meter-proxy/ { next }
   mode == "prose" && /146-account/ { next }
   mode == "prose" && /compare it to HEAD/ { sub(/ — compare it to HEAD before trusting /, " then check ") }
   /`|https?:\/\/|[0-9]/ { print; n += length($0) + 1; next }
@@ -103,7 +103,8 @@ write_fixture() {
     printf -- '- The dark ladder runs from 0E0E0E to 262626 and lime is BFFF72.\n'
     printf -- '- Fixed in commit %sde3e1c3%s for PR #93 on 2026-08-30, released as %sv1.2.1%s.\n' "$bt" "$bt" "$bt" "$bt"
     printf -- '- Tokens live in %ssrc/config/tokens.ts%s beside %sscripts/check-tokens.mjs%s.\n' "$bt" "$bt" "$bt" "$bt"
-    printf -- '- Learned the hard way: %scountryHintFrom%s once wrote raw %sNG%s and %sT1%s into the column.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt" "$bt" "$bt"
+    printf -- '- Learned the hard way: %scountryHintFrom%s once wrote raw %sNG%s and %sT1%s into the column.\n' "$bt" "$bt" "$bt" "$bt" "$bt" "$bt"
+    printf -- '- The relay answers at %smeter-proxy.estate-example.io%s and reads %sORIGIN_PROOF_SECRET%s; a demo ran at http://localhost:3000/demo.\n\n## Small\n\none line\n' "$bt" "$bt" "$bt" "$bt"
   } >"$CANON"
   mkdir -p "$(dirname "$CLAUDE_A")"
   {
@@ -220,15 +221,20 @@ run_compact forget --budget 2800 >"$TEST_ROOT/forget.out" 2>&1 || fail "default 
 assert_not_contains "$CANON" '0E0E0E'
 assert_not_contains "$CANON" 'Fixed in commit'
 assert_not_contains "$CANON" 'countryHintFrom'
-assert_contains "$CANON" 'src/config/tokens.ts'
+assert_not_contains "$CANON" 'src/config/tokens.ts'
+assert_contains "$CANON" 'meter-proxy.estate-example.io'
 assert_contains "$TEST_ROOT/forget.out" '(mode: stable)'
+# ...but a hostname, an environment variable name and a real URL may not go,
+# while a localhost URL on the same line is not what keeps it.
 write_fixture
-if run_compact path --budget 2800 >"$TEST_ROOT/path.out" 2>&1; then
-  fail 'default mode accepted a rewrite that dropped a path span'
+if run_compact host --budget 2800 >"$TEST_ROOT/host.out" 2>&1; then
+  fail 'default mode accepted a rewrite that dropped a hostname and an env var'
 fi
-assert_contains "$TEST_ROOT/path.out" 'the rewrite dropped:'
-assert_contains "$TEST_ROOT/path.out" 'src/config/tokens.ts'
-assert_contains "$CANON" 'src/config/tokens.ts'
+assert_contains "$TEST_ROOT/host.out" 'the rewrite dropped:'
+assert_contains "$TEST_ROOT/host.out" 'meter-proxy.estate-example.io'
+assert_contains "$TEST_ROOT/host.out" 'ORIGIN_PROOF_SECRET'
+assert_not_contains "$TEST_ROOT/host.out" 'localhost:3000'
+assert_contains "$CANON" 'meter-proxy.estate-example.io'
 
 write_fixture
 if run_compact forget --keep-all --budget 2800 >"$TEST_ROOT/forget-strict.out" 2>&1; then

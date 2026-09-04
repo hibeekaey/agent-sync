@@ -26,9 +26,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   it lost; a second drop keeps the section as it was. By default a rewrite may
   forget how a lesson was learned, items marked settled, refuted, muted or
   parked, one-off references (commit shas, PR numbers, run ids, past
-  versions) and anything else of low value, while every URL, path, hostname,
-  command, flag, environment variable and long id must survive (a plain code
-  word may go with the story it sat in); `--keep-all` forbids forgetting and
+  versions) and anything else of low value, while every real URL, hostname,
+  environment variable and long id must survive (paths, commands and code
+  words are asked for but may go with a story the rewrite forgets, which is
+  where they mostly sat); `--keep-all` forbids forgetting and
   protects every backtick span and bare letter-and-digit token. Four strict
   passes on a 195 KB file stalled at 164 KB because the text had reached the
   floor that keeping every token allows.

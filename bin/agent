@@ -165,11 +165,10 @@ Usage:
                          their stores) and rewrite oversized sections
                          shorter, one at a time. A rewrite may forget how a
                          lesson was learned, settled items and one-off
-                         references, but is refused if it drops a URL, a
-                         path, a hostname, a command, an environment
-                         variable or a long id; --keep-all forbids forgetting
-                         and protects every backtick span and bare
-                         letter-and-digit token
+                         references, but is refused if it drops a real URL,
+                         a hostname, an environment variable or a long id;
+                         --keep-all forbids forgetting and protects every
+                         backtick span and bare letter-and-digit token
   agent hooks [TOOL]     print verified automation snippets that keep memory
                          fresh (claude, codex, gemini, opencode, launchd)
   agent help             this text
@@ -714,13 +713,14 @@ COMPACT_IMPORT_FLOOR_PERCENT=8 # imports carry frontmatter and headers to drop
 COMPACT_OVERSHOOT_PERCENT=125  # accept a rewrite up to this far over target
 COMPACT_FORCE=0
 COMPACT_BUDGET=""
-# What a rewrite must keep. `stable` (the default) protects what an agent
-# cannot re-derive and must get exactly right: URLs, and the backtick spans
-# that are paths, hostnames, commands, flags, environment variables or long
-# ids; a plain code word (a function name, a CSS class, a two-letter code) may
-# go with the story it sat in, as may one-off references (commit shas, PR and
-# issue numbers, past versions, dates). `strict` (--keep-all) protects every
-# backtick span and every bare letter-and-digit token, and forbids forgetting.
+# What a rewrite must keep. `stable` (the default) hard-protects only what
+# routes traffic or unlocks access and cannot be re-derived: real URLs and
+# hostnames, environment variable names, and long ids (tags, tables, streams,
+# accounts). Paths, commands and code words are asked for in the prompt but
+# may go with a story the rewrite forgets, as may one-off references (commit
+# shas, PR and issue numbers, past versions, dates). `strict` (--keep-all)
+# protects every backtick span and every bare letter-and-digit token, and
+# forbids forgetting.
 COMPACT_MODE=stable
 
 compact_budget() {
@@ -792,20 +792,20 @@ extract_identifiers() {
   } | LC_ALL=C sort -u
 }
 
-# The stable subset: URLs; anything with a slash (paths, routes); a dotted
-# name ending in a short extension or TLD (files, hostnames); anything with a
-# space or starting with a dash (commands, flags); UPPER_SNAKE names of two or
-# more segments (environment variables); and ids of eight or more characters
-# mixing letters and digits. One-off references never count, whatever else
-# they match: commit shas, PR and issue numbers, version numbers, dates.
+# The stable subset: URLs other than localhost and example hosts; hostnames
+# (a dotted lowercase name ending in a real TLD, so tokens.ts is not one);
+# UPPER_SNAKE names of two or more segments (environment variables); and ids
+# of eight or more characters mixing letters and digits with no space. One-off
+# references never count, whatever else they match: commit shas, PR and issue
+# numbers, version numbers, dates.
 stable_identifiers_only() {
   grep -vE '^[0-9a-f]{6,40}$|^#?[0-9]+$|^v?[0-9]+(\.[0-9]+)+([-.][A-Za-z0-9]+)*$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$' |
     awk '
-      /:\/\// || /\// { print; next }
-      /\.[A-Za-z][A-Za-z0-9]{1,4}$/ { print; next }
-      / / || /^-/ { print; next }
+      /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|[a-z0-9.-]*example\.[a-z]+)([:\/]|$)/ { next }
+      /^https?:\/\// { print; next }
+      /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(io|com|org|net|app|dev|cloud|co|ai|me|ng|us|uk|de|fr|eu|sh|xyz|info|biz|tv|gg|so|to|ly)$/ { print; next }
       /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/ { print; next }
-      length($0) >= 8 && /[0-9]/ && /[A-Za-z]/ && /^[A-Za-z0-9._@:-]+$/ { print; next }
+      length($0) >= 8 && /[0-9]/ && /[A-Za-z]/ && /^[A-Za-z0-9._@:+-]+$/ { print; next }
     ' || true
 }
 

@@ -52,9 +52,9 @@ installed agent's global instructions slot.
 	parked, one-off references (commit shas, PR numbers, run ids, past
 	versions) and anything else of low value; it is refused, and the section
 	kept, unless it starts with the same heading, is at least a quarter of
-	the original, and still contains every URL, path, hostname, command,
-	flag, environment variable and long id of the original (a plain code
-	word may go with the story it sat in). A rewrite that drops one gets a
+	the original, and still contains every real URL, hostname, environment
+	variable and long id of the original (paths, commands and code words are
+	asked for but may go with a story the rewrite forgets). A rewrite that drops one gets a
 	second attempt naming what it lost. *--keep-all* forbids forgetting and
 	protects every backtick span and bare letter-and-digit token. Needs a
 	model: *deterministic* is rejected. The previous file is kept at

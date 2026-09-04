@@ -262,7 +262,7 @@ cmp -s "$CANON" "$TEST_ROOT/before-stub.md" ||
 # dropped 919 of 1,116 identifiers from a 195 KB file. Every backtick span, URL
 # and letter-and-digit token of the document must survive the merge.
 bt=$(printf '\140')
-printf 'Release %sv9.9.9-keep%s is documented at https://example.test/keep-0042 for tag ci-run-77.\n' "$bt" "$bt" >>"$CANON"
+printf 'Release %sv9.9.9-keep%s is documented at https://docs.estate-fixture.io/keep-0042 for tag ci-run-77.\n' "$bt" "$bt" >>"$CANON"
 cat >"$TEST_ROOT/synth-drop-id.sh" <<'FIXTURE'
 printf '# Lossy memory\n'
 awk 'f && !/keep/ { print } /^--- DOCUMENT ---$/ { f = 1 }'
@@ -272,10 +272,10 @@ run_synth_fixture synth-drop-id.sh >"$TEST_ROOT/drop-id.out" 2>&1 && :
 cmp -s "$CANON" "$TEST_ROOT/before-drop.md" ||
   fail 'a merge that dropped identifiers replaced the canon'
 assert_contains "$TEST_ROOT/drop-id.out" 'synthesis dropped 1 identifier(s)'
-assert_contains "$TEST_ROOT/drop-id.out" 'https://example.test/keep-0042'
+assert_contains "$TEST_ROOT/drop-id.out" 'https://docs.estate-fixture.io/keep-0042'
 run_agent_with_synthesizer sync >/dev/null
 assert_contains "$CANON" '# Synthesized memory'
-assert_contains "$CANON" 'https://example.test/keep-0042'
+assert_contains "$CANON" 'https://docs.estate-fixture.io/keep-0042'
 
 # Half the document is a plausible merge and must survive the floor, which is
 # the failure mode of setting it too high.
