@@ -210,7 +210,9 @@ cmp -s "$CANON" "$TEST_ROOT/canon.compacted" || fail 'compact --jobs 3 produced 
 assert_contains "$TEST_ROOT/jobs.out" 'jobs: 3)'
 grep -n '^## Rules: \|^## Colours: \|^import:claude: ' "$TEST_ROOT/jobs.out" | cut -d: -f1 | tr '\n' ' ' | grep -qE '^([0-9]+) ([0-9]+) ([0-9]+) $' || fail 'report lines missing'
 r=$(grep -n '^## Rules: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); c=$(grep -n '^## Colours: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); i=$(grep -n '^import:claude: ' "$TEST_ROOT/jobs.out" | cut -d: -f1)
-[ "$r" -lt "$c" ] && [ "$c" -lt "$i" ] || fail "report is not in document order: Rules=$r Colours=$c import=$i"
+if ! { [ "$r" -lt "$c" ] && [ "$c" -lt "$i" ]; }; then
+  fail "report is not in document order: Rules=$r Colours=$c import=$i"
+fi
 if run_compact good --jobs 0 --budget 2800 >"$TEST_ROOT/jobs0.out" 2>&1; then
   fail 'compact accepted --jobs 0'
 fi
