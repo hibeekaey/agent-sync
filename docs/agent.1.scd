@@ -6,14 +6,14 @@ agent - synchronize agent memory across AI coding agents
 
 # SYNOPSIS
 
-*agent* sync [--synthesizer MODE] [--dry-run] [--only LIST] [--skip LIST]++
+*agent* sync [--synthesizer MODE] [--rewrite] [--dry-run] [--only LIST] [--skip LIST]++
 *agent* status++
 *agent* diff++
 *agent* targets++
 *agent* doctor++
 *agent* migrate AGENT++
 *agent* gather [DIR]++
-*agent* apply [DIR] [--synthesizer MODE] [--dry-run] [--only LIST] [--skip LIST]++
+*agent* apply [DIR] [--synthesizer MODE] [--rewrite] [--dry-run] [--only LIST] [--skip LIST]++
 *agent* link [DIR] [--import]++
 *agent* revert++
 *agent* pack <add|list|update|remove>++
@@ -36,9 +36,13 @@ installed agent's global instructions slot.
 # COMMANDS
 
 *sync*
-	Gather, synthesize, redistribute. The first time a pre-existing file
-	agent-sync did not write would be overwritten, it is preserved beside
-	the target as <file>.orig.
+	Gather, synthesize, redistribute. The model sees the synthesized file
+	and the newly imported memories and answers with only the sections that
+	change, which agent-sync splices in; a memory block folded on an earlier
+	sync is dropped without a model call. *--rewrite* asks for a rewrite of
+	the whole file instead. The first time a pre-existing file agent-sync
+	did not write would be overwritten, it is preserved beside the target
+	as <file>.orig.
 
 *compact* [--budget BYTES] [--jobs N] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
 	Keep the synthesized file under a byte budget (default 150000, see

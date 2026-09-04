@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.8.1"
+VERSION="1.9.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -48,6 +48,12 @@ SYNTHESIZER_FROM_CLI=0
 SYNC_LOCK=""
 SYNTH_SRC_SUM=""
 SYNTH_QUIET=0
+SYNTH_REWRITE="${AGENT_SYNC_REWRITE:-0}"
+SYNTH_SCOPE=full
+SYNTH_ACCEPTED=0
+FOLD_SRC=""
+FOLD_NEW=0
+FOLD_DONE=0
 
 # Colour is strictly additive: the escapes stay empty unless stdout is a
 # terminal, so pipes, redirection, cron and CI keep byte-identical output.
@@ -132,9 +138,10 @@ usage() {
 agent v$VERSION: synchronize agent memory across AI coding agents
 
 Usage:
-  agent sync [--synthesizer MODE] [--dry-run]
-                         gather every agent's memory stores, synthesize them,
-                         and redistribute to all installed agents
+  agent sync [--synthesizer MODE] [--rewrite] [--dry-run]
+                         gather every agent's memory stores, fold the new
+                         ones into the synthesized file, and redistribute to
+                         all installed agents
   agent status           per-agent parity check (exit 1 if anything is stale)
   agent diff             show stale targets as unified diffs (exit 1 if any)
   agent targets          list sync targets and whether each tool is installed
@@ -143,7 +150,7 @@ Usage:
                          redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
                          (default: ./agent-memories) for editing and review
-  agent apply [DIR] [--synthesizer MODE] [--dry-run]
+  agent apply [DIR] [--synthesizer MODE] [--rewrite] [--dry-run]
                          push edited staged files from a gather DIR back to
                          their original stores, then run the full sync
   agent link [DIR] [--import]
@@ -212,12 +219,16 @@ deterministic merge is the last resort. Change any of it for one run with
 --claude-model LIST, --claude-effort LEVEL, --codex-model LIST and
 --codex-effort LEVEL (sync, apply, compact), or standing via
 AGENT_SYNC_CLAUDE_MODEL, AGENT_SYNC_CLAUDE_EFFORT, AGENT_SYNC_CODEX_MODEL and
-AGENT_SYNC_CODEX_EFFORT. A synthesis is the model rewriting the whole file
-and takes minutes: a dot lands on stderr every AGENT_SYNC_SYNTH_HEARTBEAT
-seconds (30 on a terminal, off otherwise) and AGENT_SYNC_SYNTH_TIMEOUT
-seconds (default $SYNTH_TIMEOUT_DEFAULT, 0 for none) stops a stuck model so the next one runs.
-One sync writes at a time: a second run started while one holds
-$STATE_DIR/sync.lock exits 1.
+AGENT_SYNC_CODEX_EFFORT. The model sees the file and the newly imported
+memories and answers with ONLY the sections that change, which are spliced
+in here (a fold); a memory block folded on an earlier sync is dropped with
+no model call, so a sync with nothing new is free. --rewrite (or
+AGENT_SYNC_REWRITE=1) asks for the old whole-file rewrite instead, which
+takes minutes. Either way a dot lands on stderr every
+AGENT_SYNC_SYNTH_HEARTBEAT seconds (30 on a terminal, off otherwise) and
+AGENT_SYNC_SYNTH_TIMEOUT seconds (default $SYNTH_TIMEOUT_DEFAULT, 0 for none) stops a stuck
+model so the next one runs. One sync writes at a time: a second run started
+while one holds $STATE_DIR/sync.lock exits 1.
 
 Size budget: the synthesized file is read into every session on every tool,
 so sync, status and doctor report its size against AGENT_SYNC_BUDGET
@@ -517,6 +528,9 @@ parse_synthesizer_args() {
       --claude-model=* | --claude-effort=* | --codex-model=* | --codex-effort=*)
         set_synth_opt "${1%%=*}" "${1#*=}" || return 2
         ;;
+      --rewrite)
+        SYNTH_REWRITE=1
+        ;;
       --dry-run)
         DRY_RUN=1
         ;;
@@ -807,13 +821,21 @@ try_synthesizer() {
   prompt="$2"
   out="$3"
   ts_model="${4:-}"
-  if [ -n "$ts_model" ]; then
-    echo "${C_PLAN}synthesis via $kind ($ts_model, effort $(synth_effort "$kind")):${C_OFF} ${C_DIM}whole-document rewrite, usually several minutes${C_OFF}"
+  if [ "$SYNTH_SCOPE" = fold ]; then
+    ts_what="folding $FOLD_NEW new import block(s); the answer is only the sections that change, so this is quick"
   else
-    echo "${C_PLAN}synthesis via custom command:${C_OFF} ${C_DIM}whole-document rewrite, usually several minutes${C_OFF}"
+    ts_what="whole-document rewrite, usually several minutes"
+  fi
+  if [ -n "$ts_model" ]; then
+    echo "${C_PLAN}synthesis via $kind ($ts_model, effort $(synth_effort "$kind")):${C_OFF} ${C_DIM}$ts_what${C_OFF}"
+  else
+    echo "${C_PLAN}synthesis via custom command:${C_OFF} ${C_DIM}$ts_what${C_OFF}"
   fi
   invoke_synthesizer "$kind" "$prompt" "$out" "$ts_model" || return 1
   strip_synth_preamble "$out"
+  if [ "$SYNTH_SCOPE" = fold ]; then
+    fold_assemble "$out" || return 1
+  fi
   valid_synth_output "$out" "$SRC" || return 1
   ensure_private_tmp
   identifier_source "$SRC" >"$PRIVATE_TMP/synth-ids"
@@ -840,6 +862,7 @@ synth_ladder() {
   for sl_model in $(synth_models "$sl_kind"); do
     if try_synthesizer "$sl_kind" "$sl_prompt" "$sl_out" "$sl_model"; then
       accept_synth_output "$sl_kind ($sl_model)" "$sl_out"
+      [ "$SYNTH_SCOPE" = fold ] && [ "$SYNTH_ACCEPTED" -eq 1 ] && fold_record
       return 0
     fi
     echo "${C_WARN}agent:${C_OFF} $sl_kind $sl_model did not produce a usable document after ${SYNTH_ELAPSED}s${SYNTH_FAIL_REASON:+ ($SYNTH_FAIL_REASON)}; trying the next model" >&2
@@ -850,6 +873,8 @@ synth_ladder() {
 accept_synth_output() {
   kind="$1"
   out="$2"
+  as_verb="${3:-synthesized via:}"
+  SYNTH_ACCEPTED=0
   if [ -n "$SYNTH_SRC_SUM" ] && [ "$(cksum <"$SRC")" != "$SYNTH_SRC_SUM" ]; then
     echo "${C_ERR}agent:${C_OFF} $SRC changed while the $kind synthesis ran; keeping the deterministic merge (run agent sync again to synthesize it)" >&2
     return 0
@@ -862,7 +887,219 @@ accept_synth_output() {
   cp "$SRC" "$SRC.bak"
   mv "$CANON_TMP" "$SRC"
   CANON_TMP=""
-  echo "${C_PLAN}synthesized via: $kind${C_OFF} ${C_DIM}(previous file at $SRC.bak)${C_OFF}"
+  SYNTH_ACCEPTED=1
+  echo "${C_PLAN}$as_verb $kind${C_OFF} ${C_DIM}(previous file at $SRC.bak)${C_OFF}"
+}
+
+# ---- incremental folding ---------------------------------------------------
+# A whole-document rewrite makes the model re-emit the entire file to absorb
+# a few new memories; on a 148 KB file that is ten minutes of output for a
+# change of a few lines, and every one of those minutes is a chance to lose
+# something. A fold instead shows the model the file as read-only context and
+# asks for ONLY the sections that change, spliced back in here. An import
+# block that was folded before (same fingerprint, every identifier still in
+# the curated text) is dropped with no model call at all, so a sync with
+# nothing new costs nothing. --rewrite asks for the old whole-file rewrite.
+FOLD_SECTION_FLOOR_PERCENT=70 # a fold adds; a section shrinking past this is a summary
+FOLD_HEADING='## Promoted from'
+
+fold_state_file() {
+  printf '%s/folded/%s' "$STATE_DIR" "$1"
+}
+
+# Dropping a block leaves the blank line the import printed before it; one
+# per sync would otherwise accumulate, and a sync with nothing new must
+# leave the file byte for byte as it was.
+fold_tidy() {
+  awk '
+    { line[NR] = $0 }
+    END {
+      n = NR
+      while (n > 0 && line[n] ~ /^[ \t]*$/) n--
+      for (i = 1; i <= n; i++) print line[i]
+    }
+  ' "$1" >"$1.tidy" && mv "$1.tidy" "$1"
+}
+
+# The file without its import blocks: what the model sees as context and what
+# an already-folded block is checked against before being dropped.
+fold_context() {
+  awk '
+    /^<!-- agent-sync:begin imported:/ { skip = 1; next }
+    /^<!-- agent-sync:end imported:/ { skip = 0; next }
+    !skip { print }
+  ' "$SRC"
+}
+
+# Split the file, fingerprint every import block, and sort each into "done"
+# (folded before and nothing of it missing from the curated text) or "new".
+fold_plan() {
+  ensure_private_tmp
+  FOLD_SRC="$PRIVATE_TMP/fold-src"
+  rm -rf "$FOLD_SRC"
+  mkdir -p "$FOLD_SRC"
+  compact_split "$FOLD_SRC"
+  fold_context >"$FOLD_SRC/context"
+  : >"$FOLD_SRC/new"
+  : >"$FOLD_SRC/done"
+  while IFS='|' read -r fp_idx fp_kind; do
+    case "$fp_kind" in import:*) ;; *) continue ;; esac
+    fp_from=${fp_kind#import:}
+    fp_chunk=$(printf '%s/chunk-%04d' "$FOLD_SRC" "$fp_idx")
+    # Markers off, then the import header and each store's path header and
+    # frontmatter: the memories themselves, which is what the model gets.
+    sed '1d;$d' "$fp_chunk" | awk '/^### / { on = 1 } on' >"$fp_chunk.inner"
+    identifier_source "$fp_chunk.inner" >"$fp_chunk.ids"
+    fp_sum=$(sum "$fp_chunk.inner")
+    fp_state=$(fold_state_file "$fp_from")
+    if [ -f "$fp_state" ] && [ "$(cat "$fp_state")" = "$fp_sum" ] &&
+      [ -z "$(missing_identifiers "$fp_chunk.ids" "$FOLD_SRC/context")" ]; then
+      printf '%s|%s|%s\n' "$fp_idx" "$fp_from" "$fp_sum" >>"$FOLD_SRC/done"
+    else
+      printf '%s|%s|%s\n' "$fp_idx" "$fp_from" "$fp_sum" >>"$FOLD_SRC/new"
+    fi
+  done <"$FOLD_SRC/manifest"
+  FOLD_NEW=$(grep -c . "$FOLD_SRC/new" || true)
+  FOLD_DONE=$(grep -c . "$FOLD_SRC/done" || true)
+}
+
+fold_prompt() {
+  {
+    cat <<'EOF'
+You are the memory synthesizer for agent-sync. Below is the memory file that
+agent-sync distributes to every AI coding agent on this machine, followed by
+new memories one or more agents have written since it was last synthesized.
+Fold the new memories into the file's curated sections.
+EOF
+    compact_keep_rules
+    cat <<EOF
+- Print ONLY the sections of the file that change. Each one starts with its
+  existing "## " heading line, copied exactly, and contains the whole section
+  as it should now read: everything already there that the rules keep, with
+  the new facts folded in where they belong. Do not print a section that does
+  not change, and do not print the file's title or anything else.
+- A new memory that fits no existing section goes into the section whose
+  heading starts with "$FOLD_HEADING <agent>" if the file has one (print that
+  whole section), otherwise into a new section headed exactly
+  "$FOLD_HEADING <agent>".
+- Resolve a conflict in favor of the newest information. Do not print the new
+  memories as a block; do not print their file paths or YAML frontmatter.
+EOF
+    echo
+    echo '--- MEMORY FILE (context only; print just the sections that change) ---'
+    cat "$FOLD_SRC/context"
+    echo
+    echo '--- NEW MEMORIES ---'
+    while IFS='|' read -r fq_idx fq_from _; do
+      echo
+      echo "From $fq_from:"
+      echo
+      cat "$(printf '%s/chunk-%04d.inner' "$FOLD_SRC" "$fq_idx")"
+    done <"$FOLD_SRC/new"
+  } >"$1"
+}
+
+# Turn the model's sections into the new file, in place of $1. Every "## "
+# section in the answer replaces the section with the same heading, or is
+# appended as new; every import block is dropped (the new ones were just
+# folded, the done ones were folded before). Refused, with the reason on
+# stderr, when the answer is not sections, echoes an import, repeats a
+# heading, or shrinks a section past the floor.
+fold_assemble() {
+  fa_out="$1"
+  fa_dir="$PRIVATE_TMP/fold-out"
+  rm -rf "$fa_dir"
+  mkdir -p "$fa_dir"
+  awk -v dir="$fa_dir" '
+    BEGIN { n = 0 }
+    /^## / {
+      if (n > 0) close(file)
+      n++
+      file = sprintf("%s/part-%04d", dir, n)
+      h = $0
+      sub(/[ \t]+$/, "", h)
+      print h > file
+      print h > (dir "/headings")
+      next
+    }
+    n == 0 { if ($0 !~ /^[ \t]*$/) print > (dir "/stray"); next }
+    { print > file }
+    END { if (n > 0) close(file) }
+  ' "$fa_out"
+  [ -f "$fa_dir/headings" ] || : >"$fa_dir/headings"
+  if [ -s "$fa_dir/stray" ]; then
+    echo "${C_ERR}agent:${C_OFF} the fold answered with text before its first section; refusing it" >&2
+    return 1
+  fi
+  fa_n=$(grep -c . "$fa_dir/headings" || true)
+  if [ "$fa_n" -eq 0 ]; then
+    echo "${C_ERR}agent:${C_OFF} the fold returned no \"## \" section; refusing it" >&2
+    return 1
+  fi
+  if grep -q '^## Memories imported from ' "$fa_dir/headings"; then
+    echo "${C_ERR}agent:${C_OFF} the fold echoed an imported block instead of folding it; refusing it" >&2
+    return 1
+  fi
+  if [ "$(sort "$fa_dir/headings" | uniq -d | grep -c . || true)" -gt 0 ]; then
+    echo "${C_ERR}agent:${C_OFF} the fold printed the same heading twice; refusing it" >&2
+    return 1
+  fi
+  fa_doc="$fa_out.doc"
+  : >"$fa_doc"
+  : >"$fa_dir/used"
+  while IFS='|' read -r fa_idx fa_kind; do
+    fa_chunk=$(printf '%s/chunk-%04d' "$FOLD_SRC" "$fa_idx")
+    case "$fa_kind" in
+      import:*) continue ;;
+      section)
+        fa_head=$(head -1 "$fa_chunk" | sed 's/[[:space:]]*$//')
+        fa_part=$(grep -nxF -- "$fa_head" "$fa_dir/headings" | head -1 | cut -d: -f1)
+        if [ -z "$fa_part" ]; then
+          cat "$fa_chunk" >>"$fa_doc"
+          continue
+        fi
+        fa_part=$(printf '%s/part-%04d' "$fa_dir" "$fa_part")
+        fa_old=$(file_bytes "$fa_chunk")
+        fa_new=$(file_bytes "$fa_part")
+        if [ $((fa_new * 100)) -lt $((fa_old * FOLD_SECTION_FLOOR_PERCENT)) ]; then
+          echo "${C_ERR}agent:${C_OFF} the fold shrank \"$fa_head\" from $fa_old to $fa_new bytes; a fold adds, so that is a summary, and it is refused" >&2
+          return 1
+        fi
+        cat "$fa_part" >>"$fa_doc"
+        printf '%s\n' "$fa_head" >>"$fa_dir/used"
+        ;;
+      *) cat "$fa_chunk" >>"$fa_doc" ;;
+    esac
+  done <"$FOLD_SRC/manifest"
+  fa_i=0
+  while IFS= read -r fa_head; do
+    fa_i=$((fa_i + 1))
+    grep -qxF -- "$fa_head" "$fa_dir/used" && continue
+    [ "$(tail -c 1 "$fa_doc" | wc -l | tr -d ' ')" -eq 1 ] || echo >>"$fa_doc"
+    echo >>"$fa_doc"
+    cat "$(printf '%s/part-%04d' "$fa_dir" "$fa_i")" >>"$fa_doc"
+  done <"$fa_dir/headings"
+  fold_tidy "$fa_doc"
+  mv "$fa_doc" "$fa_out"
+}
+
+# Remember what was folded, so the next sync drops the same block unasked.
+fold_record() {
+  mkdir -p "$STATE_DIR/folded"
+  cat "$FOLD_SRC/new" "$FOLD_SRC/done" | while IFS='|' read -r _ fr_from fr_sum; do
+    [ -n "$fr_from" ] || continue
+    printf '%s\n' "$fr_sum" >"$(fold_state_file "$fr_from")"
+  done
+}
+
+# Nothing new, but blocks folded earlier are back (their stores still exist):
+# drop them without a model.
+fold_drop_done() {
+  ensure_private_tmp
+  fd_out="$PRIVATE_TMP/fold-drop"
+  cp "$FOLD_SRC/context" "$fd_out"
+  fold_tidy "$fd_out"
+  accept_synth_output "$FOLD_DONE import block(s) folded earlier" "$fd_out" "removed:"
 }
 
 synthesize() {
@@ -883,8 +1120,34 @@ synthesize() {
   ensure_private_tmp
   prompt="$PRIVATE_TMP/synth-prompt"
   out="$PRIVATE_TMP/synth-out"
-  {
-    cat <<'EOF'
+  SYNTH_SRC_SUM=$(cksum <"$SRC")
+  # A custom command's contract is "read the prompt, print the document", so
+  # it always gets the whole-document prompt; the vendors fold unless asked
+  # for a rewrite.
+  SYNTH_SCOPE=full
+  case "$SYNTHESIZER_REQUEST" in
+    auto | claude | codex)
+      if [ "$SYNTH_REWRITE" -ne 1 ]; then
+        SYNTH_SCOPE="fold"
+      fi
+      ;;
+  esac
+  if [ "$SYNTH_SCOPE" = fold ]; then
+    fold_plan
+    if [ "$FOLD_NEW" -eq 0 ] && [ "$FOLD_DONE" -eq 0 ]; then
+      echo "${C_PLAN}synthesis: nothing to fold${C_OFF} ${C_DIM}(no imported memories; --rewrite asks a model to rewrite the whole file)${C_OFF}"
+      return
+    fi
+    if [ "$FOLD_NEW" -eq 0 ]; then
+      echo "${C_PLAN}synthesis: nothing new to fold${C_OFF} ${C_DIM}($FOLD_DONE import block(s) were folded before and their stores still exist)${C_OFF}"
+      fold_drop_done
+      return
+    fi
+    fold_prompt "$prompt"
+    [ "$FOLD_DONE" -eq 0 ] || echo "${C_DIM}synthesis: $FOLD_DONE import block(s) folded before will be dropped with the fold${C_OFF}"
+  else
+    {
+      cat <<'EOF'
 You are the memory synthesizer for agent-sync. Below is the synthesized
 memory file for this machine's AI coding agents. It contains curated
 sections plus marker-delimited sections of raw memories imported from
@@ -894,13 +1157,13 @@ drop noise and duplicates, resolve conflicts in favor of the newest
 information, keep the document's structure and voice, and remove the
 imported sections you fold in.
 EOF
-    compact_keep_rules
-    echo 'Print ONLY the new markdown document.'
-    echo
-    echo '--- DOCUMENT ---'
-    cat "$SRC"
-  } >"$prompt"
-  SYNTH_SRC_SUM=$(cksum <"$SRC")
+      compact_keep_rules
+      echo 'Print ONLY the new markdown document.'
+      echo
+      echo '--- DOCUMENT ---'
+      cat "$SRC"
+    } >"$prompt"
+  fi
   synth_hb=$(synth_heartbeat)
   synth_to=$(synth_timeout)
   synth_note="stops after ${synth_to}s (AGENT_SYNC_SYNTH_TIMEOUT)"
@@ -1906,6 +2169,7 @@ cmd_apply() {
         ;;
       --only=*) TARGET_ONLY=${1#*=}; shift ;;
       --skip=*) TARGET_SKIP=${1#*=}; shift ;;
+      --rewrite) SYNTH_REWRITE=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --*)
         echo "${C_ERR}agent:${C_OFF} unknown apply option: $1" >&2
