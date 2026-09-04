@@ -111,7 +111,9 @@ assert_contains "$CANON" '- obsolete codex memory'
 assert_not_contains "$CANON" 'agent-sync:begin imported'
 assert_not_contains "$CANON" '### /'
 [ -f "$CANON.bak" ] || fail 'the fold did not keep the previous file'
-[ -f "$STATE_DIR/folded/claude" ] && [ -f "$STATE_DIR/folded/codex" ] || fail 'the fold was not recorded'
+if [ ! -f "$STATE_DIR/folded/claude" ] || [ ! -f "$STATE_DIR/folded/codex" ]; then
+  fail 'the fold was not recorded'
+fi
 assert_contains "$FOLD_PROMPT" '--- NEW MEMORIES ---'
 assert_contains "$FOLD_PROMPT" 'From claude:'
 assert_contains "$FOLD_PROMPT" 'From codex:'
