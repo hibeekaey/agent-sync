@@ -271,8 +271,9 @@ cp "$CANON" "$TEST_ROOT/before-drop.md"
 run_synth_fixture synth-drop-id.sh >"$TEST_ROOT/drop-id.out" 2>&1 && :
 cmp -s "$CANON" "$TEST_ROOT/before-drop.md" ||
   fail 'a merge that dropped identifiers replaced the canon'
-assert_contains "$TEST_ROOT/drop-id.out" 'synthesis dropped 1 identifier(s)'
+assert_contains "$TEST_ROOT/drop-id.out" 'synthesis dropped 2 identifier(s)'
 assert_contains "$TEST_ROOT/drop-id.out" 'https://docs.estate-fixture.io/keep-0042'
+assert_contains "$TEST_ROOT/drop-id.out" 'ci-run-77'
 run_agent_with_synthesizer sync >/dev/null
 assert_contains "$CANON" '# Synthesized memory'
 assert_contains "$CANON" 'https://docs.estate-fixture.io/keep-0042'
