@@ -50,7 +50,9 @@ if [ "$mode" = replace ]; then
   printf '%s\n' "$memories" | awk '/^From / || /^### / || /^$/ { next } { print "- " $0 }'
   exit 0
 fi
-printf '%s\n' "$memories" | awk -v mode="$mode" '
+told=0
+printf '%s\n' "$prompt" | grep -q 'previous answer dropped the following' && told=1
+printf '%s\n' "$memories" | awk -v mode="$mode" -v told="$told" '
   /^From [^ ]+:$/ {
     agent = $2; sub(/:$/, "", agent)
     if (started) print ""
@@ -59,6 +61,7 @@ printf '%s\n' "$memories" | awk -v mode="$mode" '
   }
   /^### / || /^$/ { next }
   mode == "drop" && /keep-0042/ { next }
+  mode == "dropfirst" && !told && /keep-0042/ { next }
   { print "- " $0 }
 '
 MOCK
@@ -208,6 +211,24 @@ refused echo 'echoed an imported block'
 refused dup 'printed the same heading twice'
 refused drop 'synthesis dropped 1 identifier(s)'
 refused prose 'text before its first section'
+
+# A model that dropped an identifier is told what it lost and tried once more
+# before the ladder moves on; on the retry the same model keeps it.
+rm -rf "$STATE_DIR/folded"
+cp "$TEST_ROOT/fixture-canon.md" "$CANON"
+printf 'dropfirst\n' >"$FOLD_MODE"
+: >"$SYNTH_LOG"
+run_fold sync --synthesizer claude >"$TEST_ROOT/dropfirst.out" 2>"$TEST_ROOT/dropfirst.err"
+assert_contains "$TEST_ROOT/dropfirst.err" 'synthesis dropped 1 identifier(s)'
+assert_contains "$TEST_ROOT/dropfirst.err" 'retrying claude fable once, naming the 1 identifier(s) it dropped'
+assert_not_contains "$TEST_ROOT/dropfirst.err" 'trying the next model'
+assert_contains "$FOLD_PROMPT" 'previous answer dropped the following'
+assert_contains "$FOLD_PROMPT" '- https://docs.estate-fixture.io/keep-0042'
+assert_contains "$CANON" 'keep-0042'
+assert_not_contains "$CANON" 'agent-sync:begin imported'
+[ "$(grep -c '^claude' "$SYNTH_LOG")" -eq 2 ] || fail "expected two calls, fable then fable again, saw $(grep -c '^claude' "$SYNTH_LOG")"
+[ "$(grep -c 'model fable' "$SYNTH_LOG")" -eq 2 ] || fail 'the retry went to a different model'
+assert_contains "$TEST_ROOT/dropfirst.out" 'synthesized via: claude (fable)'
 
 # One line of chat before the sections is dropped, not fatal.
 rm -rf "$STATE_DIR/folded"

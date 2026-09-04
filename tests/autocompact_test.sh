@@ -179,6 +179,23 @@ assert_contains "$CANON" '<!-- agent-sync:begin imported:claude -->'
 assert_contains "$CANON" 'AW-11072965548'
 [ -f "$CLAUDE_A" ] || fail 'the budget pass archived a store after a refused fold'
 [ ! -d "$STATE_DIR/archive" ] || fail 'the budget pass wrote an archive'
+
+# Over budget only because a block is still to be folded: the curated text
+# fits, so nothing is trimmed to make room for the block, and it says so.
+write_fixture
+run_sync 1000000 --synthesizer deterministic >/dev/null
+with_block=$(wc -c <"$CANON" | tr -d ' ')
+curated=$(awk '/^<!-- agent-sync:begin imported:/ { s = 1; next } /^<!-- agent-sync:end imported:/ { s = 0; next } !s' "$CANON" | wc -c | tr -d ' ')
+between=$(((with_block + curated) / 2))
+printf 'foldfail\n' >"$AC_MODE"
+: >"$SYNTH_LOG"
+run_sync "$between" >"$TEST_ROOT/blockonly.out" 2>&1
+assert_contains "$TEST_ROOT/blockonly.out" 'only by the imported block(s) still to fold'
+assert_not_contains "$TEST_ROOT/blockonly.out" 'compacting'
+assert_contains "$TEST_ROOT/blockonly.out" 'over the'
+[ "$(compact_calls)" -eq 0 ] || fail 'the budget pass trimmed curated text to make room for an import block'
+assert_contains "$CANON" '<!-- agent-sync:begin imported:claude -->'
+[ "$(grep -c 'explains at length' "$CANON")" -eq 40 ] || fail 'a section was trimmed to make room for an import block'
 printf 'ok\n' >"$AC_MODE"
 
 # The plan itself, largest first: a small deficit names one section, a larger

@@ -169,7 +169,8 @@ dropped with no model call, so a sync with nothing new costs nothing, and a
 fact you remove from the curated text by hand brings its block back for
 folding. An answer that is not sections, echoes an import block, repeats a
 heading, shrinks a section past 70% (a fold adds) or drops an identifier is
-refused and the next model tried. `agent sync --rewrite` (or
+refused; a model that dropped an identifier is first tried once more, told
+exactly what it lost, and only then is the next model tried. `agent sync --rewrite` (or
 `AGENT_SYNC_REWRITE=1`) asks for a rewrite of the whole document instead,
 which is the right tool for a deliberate tidy and takes minutes.
 
@@ -258,9 +259,12 @@ covered, and only when that is not enough deepens the same sections toward
 their floors — so a small overrun costs one or two big appendices a light
 trim and never touches the dense small ones. This budget pass runs only
 after a model synthesis (never with `--synthesizer deterministic`, so a hook
-stays fast), never touches an imported block or archives a store, and keeps
-the `.bak` the synthesis wrote, so `.bak` is still the pre-sync file.
-`--no-compact` or `AGENT_SYNC_COMPACT=0` skips it.
+stays fast), never touches an imported block or archives a store, stands
+down when the file is over budget only because of a block still to be
+folded (trimming curated text to make room for it would trade what is kept
+for what is not), and keeps the `.bak` the synthesis wrote, so `.bak` is
+still the file as the run found it. `--no-compact` or `AGENT_SYNC_COMPACT=0`
+skips it.
 
 `agent compact` does the same by hand, plus what a sync will not: it
 promotes raw imported sections into curated notes (`## Promoted from

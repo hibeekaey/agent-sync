@@ -852,7 +852,68 @@ try_synthesizer() {
   if [ -n "$ts_missing" ]; then
     ts_count=$(printf '%s\n' "$ts_missing" | grep -c .)
     echo "${C_ERR}agent:${C_OFF} synthesis dropped $ts_count identifier(s) the document carries, e.g. $(printf '%s\n' "$ts_missing" | head -3 | tr '\n' ' '); refusing to replace $SRC with it" >&2
-    return 1
+    SYNTH_DROPPED="$ts_missing"
+    return 3
+  fi
+}
+
+# One model, up to two calls. A model that answers well but loses an
+# identifier is not unavailable, it is careless; told exactly what it lost,
+# it usually restores it on the next try (compact learned this first), and
+# that is cheaper than a fresh model starting from nothing. Any other failure
+# passes straight through to the ladder.
+SYNTH_DROPPED=""
+
+synth_attempt() {
+  sa_kind="$1"
+  sa_prompt="$2"
+  sa_out="$3"
+  sa_model="${4:-}"
+  sa_status=0
+  try_synthesizer "$sa_kind" "$sa_prompt" "$sa_out" "$sa_model" || sa_status=$?
+  [ "$sa_status" -eq 3 ] || return "$sa_status"
+  sa_count=$(printf '%s\n' "$SYNTH_DROPPED" | grep -c .)
+  echo "${C_WARN}agent:${C_OFF} retrying $sa_kind${sa_model:+ $sa_model} once, naming the $sa_count identifier(s) it dropped" >&2
+  synth_build_prompt "$sa_prompt.retry" "$SYNTH_DROPPED"
+  sa_status=0
+  try_synthesizer "$sa_kind" "$sa_prompt.retry" "$sa_out" "$sa_model" || sa_status=$?
+  return "$sa_status"
+}
+
+# Appended to a second prompt: what the first answer lost.
+synth_dropped_note() {
+  [ -n "$1" ] || return 0
+  echo
+  echo 'Your previous answer dropped the following, each of which must appear verbatim in the new answer:'
+  printf '%s\n' "$1" | sed 's/^/- /'
+}
+
+synth_full_prompt() {
+  {
+    cat <<'EOF'
+You are the memory synthesizer for agent-sync. Below is the synthesized
+memory file for this machine's AI coding agents. It contains curated
+sections plus marker-delimited sections of raw memories imported from
+individual agents. Rewrite the whole document: fold the durable,
+non-duplicated facts from the imported sections into the curated sections,
+drop noise and duplicates, resolve conflicts in favor of the newest
+information, keep the document's structure and voice, and remove the
+imported sections you fold in.
+EOF
+    compact_keep_rules
+    echo 'Print ONLY the new markdown document.'
+    synth_dropped_note "${2:-}"
+    echo
+    echo '--- DOCUMENT ---'
+    cat "$SRC"
+  } >"$1"
+}
+
+synth_build_prompt() {
+  if [ "$SYNTH_SCOPE" = fold ]; then
+    fold_prompt "$1" "${2:-}"
+  else
+    synth_full_prompt "$1" "${2:-}"
   fi
 }
 
@@ -869,7 +930,7 @@ synth_ladder() {
   sl_prompt="$2"
   sl_out="$3"
   for sl_model in $(synth_models "$sl_kind"); do
-    if try_synthesizer "$sl_kind" "$sl_prompt" "$sl_out" "$sl_model"; then
+    if synth_attempt "$sl_kind" "$sl_prompt" "$sl_out" "$sl_model"; then
       accept_synth_output "$sl_kind ($sl_model)" "$sl_out"
       [ "$SYNTH_SCOPE" = fold ] && [ "$SYNTH_ACCEPTED" -eq 1 ] && fold_record
       return 0
@@ -994,6 +1055,7 @@ EOF
 - Resolve a conflict in favor of the newest information. Do not print the new
   memories as a block; do not print their file paths or YAML frontmatter.
 EOF
+    synth_dropped_note "${2:-}"
     echo
     echo '--- MEMORY FILE (context only; print just the sections that change) ---'
     cat "$FOLD_SRC/context"
@@ -1152,27 +1214,9 @@ synthesize() {
       fold_drop_done
       return
     fi
-    fold_prompt "$prompt"
     [ "$FOLD_DONE" -eq 0 ] || echo "${C_DIM}synthesis: $FOLD_DONE import block(s) folded before will be dropped with the fold${C_OFF}"
-  else
-    {
-      cat <<'EOF'
-You are the memory synthesizer for agent-sync. Below is the synthesized
-memory file for this machine's AI coding agents. It contains curated
-sections plus marker-delimited sections of raw memories imported from
-individual agents. Rewrite the whole document: fold the durable,
-non-duplicated facts from the imported sections into the curated sections,
-drop noise and duplicates, resolve conflicts in favor of the newest
-information, keep the document's structure and voice, and remove the
-imported sections you fold in.
-EOF
-      compact_keep_rules
-      echo 'Print ONLY the new markdown document.'
-      echo
-      echo '--- DOCUMENT ---'
-      cat "$SRC"
-    } >"$prompt"
   fi
+  synth_build_prompt "$prompt"
   synth_hb=$(synth_heartbeat)
   synth_to=$(synth_timeout)
   synth_note="stops after ${synth_to}s (AGENT_SYNC_SYNTH_TIMEOUT)"
@@ -1194,7 +1238,7 @@ EOF
         echo "${C_ERR}agent:${C_OFF} every $SYNTHESIZER_REQUEST model failed; keeping the deterministic merge" >&2
       ;;
     *)
-      if try_synthesizer custom "$prompt" "$out"; then
+      if synth_attempt custom "$prompt" "$out"; then
         accept_synth_output "$SYNTHESIZER_REQUEST" "$out"
       else
         echo "${C_ERR}agent:${C_OFF} custom synthesizer failed; keeping the deterministic merge" >&2
@@ -1928,6 +1972,15 @@ compact_after_sync() {
   cas_budget=$(compact_budget) || return 0
   cas_bytes=$(file_bytes "$SRC")
   [ "$cas_bytes" -gt "$cas_budget" ] || return 0
+  # An import block still to be folded is on its way out; trimming curated
+  # text to make room for it would trade what is kept for what is not.
+  if grep -q '^<!-- agent-sync:begin imported:' "$SRC"; then
+    cas_curated=$(fold_context | wc -c | tr -d ' ')
+    if [ "$cas_curated" -le "$cas_budget" ]; then
+      echo "${C_DIM}budget: $cas_bytes bytes is over $cas_budget only by the imported block(s) still to fold; the curated text ($cas_curated bytes) fits, so nothing is trimmed${C_OFF}"
+      return 0
+    fi
+  fi
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "${C_PLAN}dry-run: would compact${C_OFF} ${C_DIM}($cas_bytes bytes, over the $cas_budget-byte budget)${C_OFF}"
     return 0

@@ -64,7 +64,8 @@ sync is dropped without a model call.\& \fB\-\-rewrite\fR asks for a rewrite of
 the whole file instead.\& A sync that leaves the file over its byte
 budget trims the largest sections back in the same run (see \fBcompact\fR;
 never with \fBdeterministic\fR, never touching an imported block or a store
-file); \fB\-\-no\-compact\fR or \fBAGENT_SYNC_COMPACT=0\fR skips that.\& The first
+file, and not at all when the curated text alone fits the budget);
+\fB\-\-no\-compact\fR or \fBAGENT_SYNC_COMPACT=0\fR skips that.\& The first
 time a pre\-existing file agent\-sync did not write would be overwritten,
 it is preserved beside the target as <file>.\&orig.\&
 .PP

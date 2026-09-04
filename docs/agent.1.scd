@@ -43,7 +43,8 @@ installed agent's global instructions slot.
 	the whole file instead. A sync that leaves the file over its byte
 	budget trims the largest sections back in the same run (see *compact*;
 	never with *deterministic*, never touching an imported block or a store
-	file); *--no-compact* or *AGENT_SYNC_COMPACT=0* skips that. The first
+	file, and not at all when the curated text alone fits the budget);
+	*--no-compact* or *AGENT_SYNC_COMPACT=0* skips that. The first
 	time a pre-existing file agent-sync did not write would be overwritten,
 	it is preserved beside the target as <file>.orig.
 

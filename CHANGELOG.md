@@ -21,6 +21,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the same sections toward the floors. A small overrun costs one or two
   large appendices a light trim and leaves the dense small sections alone,
   where the old plan took 8% off every section including the rule tables.
+- A fold or rewrite that drops an identifier gets one more attempt on the
+  same model, naming what it lost, before the ladder moves on (compact
+  already did this). Measured on the real canon, three models in a row lost
+  the same token from a store and each was refused after about 30 seconds;
+  told what it dropped, the first keeps it.
+- The budget pass does not trim curated text to make room for an import
+  block that is still to be folded: when the curated text alone fits the
+  budget it stands down and says so.
 
 ## [1.9.0] - 2026-09-04
 
