@@ -124,6 +124,9 @@ assert_contains "$FOLD_PROMPT" 'Print ONLY the sections of the file that change'
 assert_not_contains "$FOLD_PROMPT" 'Rewrite the whole document'
 assert_contains "$AGENT_CONFIG_ROOT/.codex/AGENTS.md" '## Promoted from claude'
 [ -z "$(find "$TEST_TMPDIR" -mindepth 1 -print -quit)" ] || fail 'the fold left temporary files behind'
+# The dropped blocks took the blank lines that set them apart with them, and
+# each promoted section sits after exactly one blank line.
+assert_clean_seams "$CANON"
 
 # Nothing changed: the re-imported blocks are recognised and dropped without a
 # model call, and the file reads as it did after the fold.
@@ -147,6 +150,9 @@ assert_contains "$CANON" 'charlie at https://docs.estate-fixture.io/keep-0042'
 [ "$(grep -c '^## Promoted from claude$' "$CANON")" -eq 1 ] || fail 'the promoted section was doubled'
 assert_contains "$CANON" '## Promoted from codex'
 assert_not_contains "$CANON" 'agent-sync:begin imported'
+# The answer's only section ends without a blank line; the section that
+# follows it in the file must still start on one.
+assert_clean_seams "$CANON"
 
 # A fact removed from the curated text by hand comes back: its block is no
 # longer "done" even though the store is unchanged.
@@ -184,6 +190,7 @@ other_after=$(awk '/^## Other$/ { f = 1 } f' "$CANON")
 [ "$other_before" = "$other_after" ] || fail 'a section the fold did not name was changed'
 [ "$(grep -n '^## ' "$CANON" | head -1)" = '5:## Notes' ] || fail "section order changed: $(grep -n '^## ' "$CANON" | head -1)"
 assert_not_contains "$CANON" 'agent-sync:begin imported'
+assert_clean_seams "$CANON"
 
 # Each guard on the answer, one at a time: the file keeps its imports and its
 # previous text when the answer is refused.
@@ -248,6 +255,7 @@ assert_contains "$TEST_ROOT/fallback.err" 'every claude model failed; trying the
 assert_contains "$TEST_ROOT/fallback.out" 'synthesized via: codex (gpt-5.6-terra)'
 assert_contains "$CANON" '- (via codex)'
 assert_not_contains "$CANON" 'agent-sync:begin imported'
+assert_clean_seams "$CANON"
 [ "$(claude_calls)" -eq 3 ] || fail 'every claude rung should have been tried before codex'
 
 # --rewrite asks for the whole document, as before.

@@ -90,6 +90,7 @@ write_fixture
 : >"$SYNTH_LOG"
 run_sync 1000000 >"$TEST_ROOT/fold.out" 2>&1
 assert_contains "$CANON" '## Promoted from claude'
+assert_clean_seams "$CANON"
 assert_not_contains "$TEST_ROOT/fold.out" 'compacting'
 [ "$(compact_calls)" -eq 0 ] || fail 'a sync within budget compacted'
 total=$(wc -c <"$CANON" | tr -d ' ')
@@ -126,6 +127,7 @@ assert_contains "$CANON.bak" '<!-- agent-sync:begin imported:claude -->'
 [ "$(grep -c 'explains at length' "$CANON.bak")" -eq 40 ] || fail 'the .bak does not hold the untrimmed section'
 [ "$(grep -c 'explains at length' "$CANON")" -lt 40 ] || fail 'the largest section was not trimmed'
 cmp -s "$CANON" "$AGENT_CONFIG_ROOT/.codex/AGENTS.md" || fail 'the trimmed file was not what got distributed'
+assert_clean_seams "$CANON"
 assert_not_contains "$TEST_ROOT/trim.out" 'over the'
 
 # Within budget again: nothing happens.
