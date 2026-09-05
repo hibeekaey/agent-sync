@@ -59,9 +59,9 @@ flows back into the canon.
 | `agent hooks [tool]` | Print verified automation snippets (Claude/Codex/Gemini hooks, an OpenCode plugin) |
 | `agent targets` | List targets and detection state |
 
-Target filtering: `--only claude,codex` / `--skip qwen` flags on `sync` and
-`apply`; the `AGENT_SYNC_ONLY` / `AGENT_SYNC_SKIP` environment variables
-additionally apply to `status`, `diff`, `skills sync` and `mcp sync`.
+Target filtering: `--only claude,codex` / `--skip qwen` flags on `sync`,
+`apply` and `compact`; the `AGENT_SYNC_ONLY` / `AGENT_SYNC_SKIP` environment
+variables additionally apply to `status`, `diff`, `skills sync` and `mcp sync`.
 
 The edit loop: `agent gather`, edit the staged files in one place, `agent
 apply`. Your edits land back in each agent's own store, get folded into the
@@ -72,8 +72,11 @@ Every command with real output, end to end:
 
 **Safety:** the first time sync would overwrite a pre-existing file it did
 not write, the original is preserved beside it as `<file>.orig`, and `agent
-revert` restores everything. `apply` validates every manifest entry against
-the supported memory-store paths and rejects path traversal and symlinks.
+revert` restores everything. It remembers what it wrote, so a target still
+holding an earlier sync's output is replaced without a backup and a hand
+edit made later still gets one. `apply` validates every manifest entry
+against the supported memory-store paths and rejects path traversal and
+symlinks.
 Pack subdirectories must resolve inside the downloaded repository. MCP files
 are written through private atomic temporary files, and CLI-managed MCP
 updates validate before replacement and restore the recorded configuration if
@@ -161,7 +164,7 @@ Use `--synthesizer deterministic` when the document must stay entirely local.
 
 A sync **folds** rather than rewrites. The model is shown the file as
 read-only context and the memories imported since the last synthesis, and
-answers with only the sections that change — an existing `## ` heading
+answers with only the sections that change — an existing `##` heading
 copied exactly, or `## Promoted from <agent>` for memories that fit nowhere
 else — which agent-sync splices back in. A block folded on an earlier sync
 (same fingerprint, every identifier still present in the curated text) is
@@ -170,9 +173,10 @@ fact you remove from the curated text by hand brings its block back for
 folding. An answer that is not sections, echoes an import block, repeats a
 heading, shrinks a section past 70% (a fold adds) or drops an identifier is
 refused; a model that dropped an identifier is first tried once more, told
-exactly what it lost, and only then is the next model tried. `agent sync --rewrite` (or
-`AGENT_SYNC_REWRITE=1`) asks for a rewrite of the whole document instead,
-which is the right tool for a deliberate tidy and takes minutes.
+exactly what it lost, and only then is the next model tried.
+`agent sync --rewrite` (or `AGENT_SYNC_REWRITE=1`) asks for a rewrite of the
+whole document instead, which is the right tool for a deliberate tidy and
+takes minutes.
 
 | Selection | Behaviour |
 | --- | --- |
@@ -406,6 +410,7 @@ Beyond memory, `agent` syncs the rest of your agent setup:
 | Colour | Status output is coloured on a terminal and plain everywhere else, so pipes, cron and CI keep the exact bytes they had. `--no-color` or `NO_COLOR` turns it off; `--color=always` or `FORCE_COLOR` keeps it through a pipe or a pager. Escapes never reach a file. |
 | Walkthrough | Every command with real output: [docs/walkthrough.md](docs/walkthrough.md). |
 | Manual | `man agent` after `make install`, or `agent help`. |
+| Name clash | Cursor's CLI installer also creates an `agent` command in `~/.local/bin`. If `agent version` answers with anything but `agent vX.Y.Z`, another program is first on `PATH`; `agent doctor` reports it, and hook and cron snippets then need the full path or a distinct symlink such as `agent-sync`. |
 | Compatibility | Supported platforms, what agent-sync depends on in each tool, versioning and the deprecation policy: [docs/compatibility.md](docs/compatibility.md). |
 
 ## Contributing

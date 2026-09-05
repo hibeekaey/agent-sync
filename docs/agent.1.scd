@@ -6,14 +6,15 @@ agent - synchronize agent memory across AI coding agents
 
 # SYNOPSIS
 
-*agent* sync [--synthesizer MODE] [--rewrite] [--dry-run] [--only LIST] [--skip LIST]++
+*agent* sync [--synthesizer MODE] [--rewrite] [--no-compact] [--budget BYTES] [--dry-run] [--only LIST] [--skip LIST]++
+*agent* compact [--budget BYTES] [--jobs N] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]++
 *agent* status++
 *agent* diff++
 *agent* targets++
 *agent* doctor++
 *agent* migrate AGENT++
 *agent* gather [DIR]++
-*agent* apply [DIR] [--synthesizer MODE] [--rewrite] [--dry-run] [--only LIST] [--skip LIST]++
+*agent* apply [DIR] [--synthesizer MODE] [--rewrite] [--no-compact] [--budget BYTES] [--dry-run] [--only LIST] [--skip LIST]++
 *agent* link [DIR] [--import]++
 *agent* revert++
 *agent* pack <add|list|update|remove>++
@@ -44,9 +45,12 @@ installed agent's global instructions slot.
 	budget trims the largest sections back in the same run (see *compact*;
 	never with *deterministic*, never touching an imported block or a store
 	file, and not at all when the curated text alone fits the budget);
-	*--no-compact* or *AGENT_SYNC_COMPACT=0* skips that. The first
-	time a pre-existing file agent-sync did not write would be overwritten,
-	it is preserved beside the target as <file>.orig.
+	*--no-compact* or *AGENT_SYNC_COMPACT=0* skips that, and *--budget*
+	BYTES sets the budget for one run. The first time a pre-existing file
+	agent-sync did not write would be overwritten, it is preserved beside
+	the target as <file>.orig; agent-sync remembers what it wrote, so a
+	target still holding an earlier sync's output is replaced without a
+	backup and a hand edit made later still gets one.
 
 *compact* [--budget BYTES] [--jobs N] [--synthesizer MODE] [--force] [--keep-all] [--dry-run]
 	Keep the synthesized file under a byte budget (default 150000, see
@@ -86,7 +90,10 @@ installed agent's global instructions slot.
 
 *doctor*
 	Diagnose the setup: file presence, marker integrity, detected agents,
-	synthesis availability, staleness.
+	synthesis availability, the byte budget, staleness, and whether the
+	*agent* on PATH is agent-sync at all (Cursor's CLI installer also
+	creates an *agent* command, which a hook or cron line would run
+	instead); another build of agent-sync there is only noted.
 
 *migrate* AGENT
 	Fold one agent's memory stores in, then redistribute. AGENT is one of
@@ -204,15 +211,16 @@ installed agent's global instructions slot.
 *AGENT_SYNC_BUDGET*
 	Byte budget for the synthesized file (default 150000). Reported by
 	sync, enforced by status and doctor, restored by *compact*; the
-	*--budget* flag of *compact* overrides it for one run.
+	*--budget* flag of *sync*, *apply* and *compact* overrides it for one
+	run.
 
 *AGENT_SYNC_COMPACT_JOBS*
 	How many sections *compact* rewrites at once (default 4); *--jobs*
 	overrides it for one run.
 
 *AGENT_SYNC_ONLY*, *AGENT_SYNC_SKIP*
-	Comma-separated target filters used by sync, apply, status, diff, MCP sync
-	and skills sync.
+	Comma-separated target filters used by sync, apply, compact, status,
+	diff, MCP sync and skills sync.
 
 # SEE ALSO
 

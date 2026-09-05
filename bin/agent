@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.10.1"
+VERSION="1.11.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -26,6 +26,7 @@ TARGET_ONLY="${AGENT_SYNC_ONLY:-}"
 TARGET_SKIP="${AGENT_SYNC_SKIP:-}"
 STATE_DIR="$AGENT_HOME/.config/agent-sync"
 IMPORT_SNAPSHOT_DIR="$STATE_DIR/import-snapshots"
+DISTRIBUTED_DIR="$STATE_DIR/distributed"
 PACKS_DIR="$STATE_DIR/packs"
 PACKS_LOCK="$STATE_DIR/packs.lock"
 MCP_DIR="$STATE_DIR/mcp.d"
@@ -139,7 +140,8 @@ usage() {
 agent v$VERSION: synchronize agent memory across AI coding agents
 
 Usage:
-  agent sync [--synthesizer MODE] [--rewrite] [--no-compact] [--dry-run]
+  agent sync [--synthesizer MODE] [--rewrite] [--no-compact] [--budget BYTES]
+             [--dry-run]
                          gather every agent's memory stores, fold the new
                          ones into the synthesized file, trim it back under
                          budget if it grew past it, and redistribute to all
@@ -152,7 +154,8 @@ Usage:
                          redistribute
   agent gather [DIR]     stage every agent's memory stores into DIR
                          (default: ./agent-memories) for editing and review
-  agent apply [DIR] [--synthesizer MODE] [--rewrite] [--no-compact] [--dry-run]
+  agent apply [DIR] [--synthesizer MODE] [--rewrite] [--no-compact]
+              [--budget BYTES] [--dry-run]
                          push edited staged files from a gather DIR back to
                          their original stores, then run the full sync
   agent link [DIR] [--import]
@@ -189,7 +192,7 @@ Usage:
                          fresh (claude, codex, gemini, opencode, launchd)
   agent help             this text
 
-Target filtering: --only LIST / --skip LIST flags (sync, apply) or the
+Target filtering: --only LIST / --skip LIST flags (sync, apply, compact) or the
 AGENT_SYNC_ONLY / AGENT_SYNC_SKIP env vars, comma-separated target names.
 
 Colour: status output is coloured on a terminal and plain everywhere else,
@@ -202,6 +205,8 @@ redistributed to every agent.
 
 The first time sync overwrites a pre-existing file agent-sync did not write,
 the original is kept beside it as <file>.orig; agent revert restores them.
+agent-sync remembers what it wrote, so a target still holding an earlier
+sync's output is replaced without a backup and a later hand edit gets one.
 
 Agents with readable memory stores: claude, codex, cursor, continue,
 windsurf, goose.
@@ -234,7 +239,8 @@ while one holds $STATE_DIR/sync.lock exits 1.
 
 Size budget: the synthesized file is read into every session on every tool,
 so sync, status and doctor report its size against AGENT_SYNC_BUDGET
-(default $COMPACT_BUDGET_DEFAULT bytes). A sync that leaves the file over budget trims
+(default $COMPACT_BUDGET_DEFAULT bytes; --budget BYTES on sync, apply and compact sets it
+for one run). A sync that leaves the file over budget trims
 it back the same run (a model rewrites the largest sections first, only as
 many as needed; never on --synthesizer deterministic, never touching
 imported blocks or store files; --no-compact or AGENT_SYNC_COMPACT=0 skips
@@ -497,6 +503,7 @@ import_agent() {
       cp "$snapshot" "$IMPORT_SNAPSHOT_TMP"
       mv "$IMPORT_SNAPSHOT_TMP" "$IMPORT_SNAPSHOT_DIR/$from"
       IMPORT_SNAPSHOT_TMP=""
+DISTRIBUTED_TMP=""
     else
       rm -f "$IMPORT_SNAPSHOT_DIR/$from"
     fi
@@ -540,6 +547,17 @@ parse_synthesizer_args() {
       --no-compact)
         SYNTH_COMPACT=0
         ;;
+      --budget)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "${C_ERR}agent:${C_OFF} --budget requires a number of bytes" >&2
+          return 2
+        fi
+        COMPACT_BUDGET="$1"
+        ;;
+      --budget=*)
+        COMPACT_BUDGET=${1#*=}
+        ;;
       --dry-run)
         DRY_RUN=1
         ;;
@@ -572,6 +590,7 @@ parse_synthesizer_args() {
     esac
     shift
   done
+  compact_budget >/dev/null || return 2
   validate_synthesizer_request
 }
 
@@ -2037,6 +2056,23 @@ compact_after_sync() {
   COMPACT_BACKUP=1
 }
 
+# What agent-sync last wrote to each target, by checksum, so the adoption
+# backup can tell a user's file from agent-sync's own earlier output.
+distributed_by_agent_sync() {
+  [ -f "$DISTRIBUTED_DIR/$1" ] && [ "$(cat "$DISTRIBUTED_DIR/$1")" = "$(sum "$2")" ]
+}
+
+record_distributed() {
+  mkdir -p "$DISTRIBUTED_DIR"
+  DISTRIBUTED_TMP=$(mktemp "$DISTRIBUTED_DIR/.agent-sync-distributed.XXXXXXXX") || {
+    echo "${C_ERR}agent:${C_OFF} could not record what was written to $2" >&2
+    exit 1
+  }
+  sum "$2" >"$DISTRIBUTED_TMP"
+  mv "$DISTRIBUTED_TMP" "$DISTRIBUTED_DIR/$1"
+  DISTRIBUTED_TMP=""
+}
+
 distribute() {
   while IFS='|' read -r name dir dest mode; do
     if ! target_selected "$name"; then
@@ -2060,15 +2096,19 @@ distribute() {
       copy) cp "$SRC" "$TARGET_TMP" ;;
       cursor) cursor_render >"$TARGET_TMP" ;;
     esac
-    # Adopt safety: before the first overwrite of a differing pre-existing
-    # file, keep the original beside it. agent revert restores it.
+    # Adopt safety: before the first overwrite of a differing file that
+    # agent-sync did not write itself, keep the original beside it; agent
+    # revert restores it. A target still holding an earlier sync's output is
+    # replaced without a backup, so a hand edit made later still gets one.
     if [ -f "$dest" ] && [ ! -f "$dest.orig" ] &&
-      [ "$(sum "$dest")" != "$(sum "$TARGET_TMP")" ]; then
+      [ "$(sum "$dest")" != "$(sum "$TARGET_TMP")" ] &&
+      ! distributed_by_agent_sync "$name" "$dest"; then
       cp "$dest" "$dest.orig"
       echo "$name: ${C_WARN}pre-existing file preserved at${C_OFF} ${C_PATH}$dest.orig${C_OFF}"
     fi
     mv "$TARGET_TMP" "$dest"
     TARGET_TMP=""
+    record_distributed "$name" "$dest"
     echo "$name: ${C_OK}synced${C_OFF} ${C_DIM}->${C_OFF} ${C_PATH}$dest${C_OFF}"
   done <<EOF
 $(targets)
@@ -2540,6 +2580,19 @@ EOF
     fi
   done
   [ -f "$SRC.bak" ] && echo "${C_DIM}note: last synthesis backup at $SRC.bak${C_OFF}"
+  # Every documented command, hook snippet and cron line says `agent`, and
+  # Cursor's CLI installer also creates an `agent` command, so a hook can
+  # start a different program without a word of complaint. Another build of
+  # agent-sync on PATH (a checkout beside a brew install) is only noted.
+  found=$(command -v agent 2>/dev/null || true)
+  if [ -n "$found" ] && [ -f "$found" ] && ! cmp -s "$found" "$0"; then
+    if grep -q 'AGENT_SYNC_HOME' "$found" 2>/dev/null; then
+      echo "${C_DIM}note: agent on PATH is $found, a different build of agent-sync than $0${C_OFF}"
+    else
+      echo "${C_ERR}PROBLEM:${C_OFF} agent on PATH is $found, which is not agent-sync; hooks, cron lines and the documented commands run it instead"
+      problems=$((problems + 1))
+    fi
+  fi
   if [ -f "$SRC" ] && ! budget_report >/dev/null 2>&1; then
     echo "${C_ERR}PROBLEM:${C_OFF} synthesized file is $(file_bytes "$SRC") bytes, over the $(compact_budget)-byte budget (agent compact fixes)"
     problems=$((problems + 1))

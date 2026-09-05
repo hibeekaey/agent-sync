@@ -62,6 +62,7 @@ _agent() {
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
         '--rewrite[rewrite the whole file instead of folding the new memories in]' \
         '--no-compact[skip the budget pass after a model synthesis]' \
+        '--budget=[byte budget for the synthesized file]:bytes' \
         '--claude-model=[Claude model ladder, comma-separated]:models' \
         '--claude-effort=[Claude effort level]:level' \
         '--codex-model=[Codex model ladder, comma-separated]:models' \
@@ -75,6 +76,7 @@ _agent() {
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
         '--rewrite[rewrite the whole file instead of folding the new memories in]' \
         '--no-compact[skip the budget pass after a model synthesis]' \
+        '--budget=[byte budget for the synthesized file]:bytes' \
         '--claude-model=[Claude model ladder, comma-separated]:models' \
         '--claude-effort=[Claude effort level]:level' \
         '--codex-model=[Codex model ladder, comma-separated]:models' \

@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-09-05
+
+### Added
+
+- `--budget BYTES` on `sync` and `apply`, the flag `compact` already had,
+  so the budget pass at the end of a sync can be set for one run; the
+  README had described it that way already.
+- `doctor` checks that the `agent` on `PATH` is this program. Cursor's CLI
+  installer also creates an `agent` command, so a hook or cron line saying
+  `agent sync` can start Cursor instead without a word of complaint; doctor
+  now names the other program as a problem. Another build of agent-sync on
+  `PATH`, a checkout beside a brew install, is only noted.
+
+### Fixed
+
+- The adoption backup is only for files agent-sync did not write. The rule
+  was "first differing overwrite, once", so the first sync that changed the
+  file (any fold, or any store change on the deterministic path) backed up
+  agent-sync's own earlier output as `<file>.orig` on every target, and a
+  hand edit made after that was overwritten with no backup, which the
+  README's safety promise did not allow. agent-sync now remembers what it
+  wrote to each target (`~/.config/agent-sync/distributed/`) and skips the
+  backup while the file is still that; a hand edit still gets one, and
+  `revert` restores it. Existing `.orig` files are left alone; delete one
+  yourself if you know it holds agent-sync's own output.
+- The man page synopsis lists `compact`, and the target-filter flags are
+  documented for `compact` as well as `sync` and `apply`.
+
 ## [1.10.1] - 2026-09-05
 
 ### Fixed
