@@ -60,6 +60,12 @@ _agent() {
       _arguments $color_opts \
         '--dry-run[print actions without writing]' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
+        '--rewrite[rewrite the whole file instead of folding the new memories in]' \
+        '--no-compact[skip the budget pass after a model synthesis]' \
+        '--claude-model=[Claude model ladder, comma-separated]:models' \
+        '--claude-effort=[Claude effort level]:level' \
+        '--codex-model=[Codex model ladder, comma-separated]:models' \
+        '--codex-effort=[Codex effort level]:level' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]'
       ;;
@@ -67,6 +73,12 @@ _agent() {
       _arguments $color_opts \
         '--dry-run[print actions without writing]' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex deterministic)' \
+        '--rewrite[rewrite the whole file instead of folding the new memories in]' \
+        '--no-compact[skip the budget pass after a model synthesis]' \
+        '--claude-model=[Claude model ladder, comma-separated]:models' \
+        '--claude-effort=[Claude effort level]:level' \
+        '--codex-model=[Codex model ladder, comma-separated]:models' \
+        '--codex-effort=[Codex effort level]:level' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]' \
         '1:directory:_files -/'
@@ -79,6 +91,10 @@ _agent() {
         '--budget=[byte budget for the synthesized file]:bytes' \
         '--jobs=[sections rewritten concurrently]:count' \
         '--synthesizer=[synthesis mode]:mode:(auto claude codex)' \
+        '--claude-model=[Claude model ladder, comma-separated]:models' \
+        '--claude-effort=[Claude effort level]:level' \
+        '--codex-model=[Codex model ladder, comma-separated]:models' \
+        '--codex-effort=[Codex effort level]:level' \
         '--only=[comma-separated targets]' \
         '--skip=[comma-separated targets]'
       ;;
