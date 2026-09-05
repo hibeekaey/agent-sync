@@ -36,7 +36,7 @@ _agent_sync() {
   esac
   case "$cur" in
     --*)
-      COMPREPLY=($(compgen -W "--synthesizer --dry-run --only --skip --budget --jobs --force --keep-all --import --url --env --header --color --no-color" -- "$cur"))
+      COMPREPLY=($(compgen -W "--synthesizer --rewrite --no-compact --dry-run --only --skip --budget --jobs --force --keep-all --claude-model --claude-effort --codex-model --codex-effort --import --url --env --header --color --no-color" -- "$cur"))
       return
       ;;
   esac
