@@ -103,13 +103,13 @@ goose: folded 1 memory file(s) in
 synthesis: stops after 1200s (AGENT_SYNC_SYNTH_TIMEOUT)
 synthesis via claude (fable, effort low): folding 3 new import block(s); the answer is only the sections that change, so this is quick
 synthesized via: claude (fable) (previous file at ~/.claude/CLAUDE.md.bak)
-codex: pre-existing file preserved at ~/.codex/AGENTS.md.orig
 codex: synced -> ~/.codex/AGENTS.md
+gemini: synced -> ~/.gemini/GEMINI.md
 ...
-synthesized file: 293 of 150000 bytes
+synthesized file: 287 of 150000 bytes
 ```
 
-Ten seconds on this file. On a terminal a dot lands on stderr every 30
+Eleven seconds on this file. On a terminal a dot lands on stderr every 30
 seconds while the model runs, and a model still running after 1200 seconds
 is stopped so the next one can try. The file afterwards: the three raw
 blocks are gone, what they said lives in curated sections, and the URL and
@@ -126,7 +126,7 @@ Always run tests before pushing.
 
 ## Promoted from codex
 
-- User prefers tables over prose.
+- Prefer tables over prose.
 
 ## Promoted from goose
 
@@ -158,7 +158,7 @@ synthesis: nothing new to fold (3 import block(s) were folded before and their s
 removed: 3 import block(s) folded earlier (previous file at ~/.claude/CLAUDE.md.bak)
 codex: synced -> ~/.codex/AGENTS.md
 ...
-synthesized file: 293 of 150000 bytes
+synthesized file: 287 of 150000 bytes
 ```
 
 No model was called: each re-imported block had the same fingerprint as
@@ -184,7 +184,7 @@ qwen: not installed
 ...
 kiro: synced
 ...
-synthesized file: 1552 of 150000 bytes
+synthesized file: 287 of 150000 bytes
 $ echo $?
 0
 ```
@@ -196,7 +196,7 @@ $ agent status
 codex: synced
 gemini: STALE
 ...
-synthesized file: 1552 of 150000 bytes
+synthesized file: 287 of 150000 bytes
 1 target(s) stale; run: agent sync
 $ echo $?
 1
@@ -218,7 +218,7 @@ $ agent diff
 === gemini: ~/.gemini/GEMINI.md
 --- ~/.gemini/GEMINI.md
 +++ ~/.claude/CLAUDE.md
-@@ -1 +1,46 @@
+@@ -1 +1,15 @@
 -hand-edited junk
 +# My memory
 ...
@@ -247,7 +247,7 @@ Diagnosis without changes.
 
 ```console
 $ agent doctor
-agent v1.10.1
+agent v1.11.0
 synthesized file: ~/.claude/CLAUDE.md
 ok: synthesized file exists (46 lines)
 ok: 5 sync target(s) detected (agent targets lists them)
@@ -260,9 +260,9 @@ A broken setup, exit 1:
 
 ```console
 $ agent doctor
-agent v1.10.1
+agent v1.11.0
 synthesized file: ~/.claude/CLAUDE.md
-ok: synthesized file exists (38 lines)
+ok: synthesized file exists (45 lines)
 PROBLEM: malformed import markers for codex in ~/.claude/CLAUDE.md
 ok: 5 sync target(s) detected (agent targets lists them)
 ok: claude CLI available for semantic synthesis
@@ -275,7 +275,9 @@ Missing model CLIs are a `note`, not a problem, because deterministic
 synthesis works without them. The marker check matters most: agent-sync
 refuses to modify a file whose managed sections are corrupted, and doctor
 tells you before you hit that. A file over its budget is a third kind of
-problem, and the fix it names is `agent compact`.
+problem, and the fix it names is `agent compact`. A fourth is an `agent` on
+`PATH` that is not agent-sync at all: Cursor's CLI installer creates one
+too, and a hook or cron line saying `agent sync` would run it instead.
 
 ## agent targets
 
@@ -355,19 +357,19 @@ synthesized via: claude (fable) (previous file at ~/.claude/CLAUDE.md.bak)
 codex: synced -> ~/.codex/AGENTS.md
 gemini: synced -> ~/.gemini/GEMINI.md
 ...
-synthesized file: 317 of 150000 bytes
+synthesized file: 311 of 150000 bytes
 ```
 
 One edit travels three hops: into the agent's own store, into the memory
 file, then out to every agent. It reported one update from four staged
 files because it compares checksums and writes only what changed, and the
 fold that followed had one new block to work on: the other two were folded
-before and were dropped unasked. Nine seconds, and the section reads:
+before and were dropped unasked. Eight seconds, and the section reads:
 
 ```markdown
 ## Promoted from codex
 
-- User prefers tables over prose.
+- Prefer tables over prose.
 - Deploys need the VPN.
 ...
 ```
@@ -383,7 +385,8 @@ pointing anywhere.
 ## agent compact
 
 The synthesized file is read into every session on every tool, so its size
-is paid on every turn. A budget (150 KB by default) keeps that in check:
+is paid on every turn. A budget keeps that in check (150 KB by default;
+`AGENT_SYNC_BUDGET`, or `--budget` on `sync`, `apply` and `compact`):
 `sync` reports the size after every run, `status` and `doctor` fail while
 the file is over it, and a sync whose model synthesis leaves the file over
 budget trims it back in the same run. `compact` does the trim by hand.
@@ -690,21 +693,17 @@ Undo the last synthesis and the adoption backups.
 
 ```console
 $ agent revert
-codex: restored ~/.codex/AGENTS.md from its .orig backup
 gemini: restored ~/.gemini/GEMINI.md from its .orig backup
-cursor: restored ~/.cursor/rules/best-practices.mdc from its .orig backup
-goose: restored ~/.config/goose/.goosehints from its .orig backup
-kiro: restored ~/.kiro/steering/agent-sync.md from its .orig backup
 synthesized file restored from ~/.claude/CLAUDE.md.bak
 ```
 
-The first time a sync overwrites a target whose content differs from what
-it is about to write, it keeps the original beside it as `<file>.orig` and
-never replaces that backup. Gemini's is the hand-edited file from the
-`diff` example; the other four are the deterministic merge each target
-held before the first model fold changed it. `revert` puts every `.orig`
-back and restores the memory file from the `.bak` the last synthesis
-left.
+The first time a sync overwrites a file it did not write itself, it keeps
+the original beside it as `<file>.orig` and never replaces that backup.
+It remembers what it wrote, so the targets that held the deterministic
+merge before the fold got no backup when the fold replaced it; Gemini's
+`.orig` is the hand-edited file from the `diff` example. `revert` puts
+every `.orig` back and restores the memory file from the `.bak` the last
+synthesis left.
 
 ## Filtering and dry runs
 

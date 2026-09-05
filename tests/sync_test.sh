@@ -46,6 +46,23 @@ run_agent sync >/dev/null
 printf 'goose remembers the deploy steps\n' >"$GOOSE_MEMORY"
 run_agent sync >/dev/null
 assert_contains "$CANON" 'goose remembers the deploy steps'
+
+# That sync changed the canon, so every target differed from what was about
+# to be written; none of them is a user's file, so none gets an adoption
+# backup. A hand edit made afterwards does, holding the edit, and revert
+# brings it back.
+for dest in "$AGENT_CONFIG_ROOT/.codex/AGENTS.md" "$AGENT_CONFIG_ROOT/.cursor/rules/best-practices.mdc"; do
+  [ ! -f "$dest.orig" ] || fail "agent-sync backed up its own earlier output: $dest.orig"
+done
+printf '# Hand-edited codex instructions\n' >"$AGENT_CONFIG_ROOT/.codex/AGENTS.md"
+run_agent sync >"$TEST_ROOT/hand-edit.out"
+assert_contains "$TEST_ROOT/hand-edit.out" 'codex: pre-existing file preserved at'
+assert_contains "$AGENT_CONFIG_ROOT/.codex/AGENTS.md.orig" '# Hand-edited codex instructions'
+cmp -s "$CANON" "$AGENT_CONFIG_ROOT/.codex/AGENTS.md" || fail 'the hand-edited target was not resynced'
+run_agent revert >/dev/null
+assert_contains "$AGENT_CONFIG_ROOT/.codex/AGENTS.md" '# Hand-edited codex instructions'
+run_agent sync >/dev/null
+rm -f "$AGENT_CONFIG_ROOT/.codex/AGENTS.md.orig"
 rm -f "$GOOSE_MEMORY"
 run_agent sync >/dev/null
 assert_not_contains "$CANON" 'goose remembers the deploy steps'
@@ -72,6 +89,37 @@ cmp -s "$CANON" "$TEST_ROOT/before-dry-canon.md" || fail 'dry-run modified the c
 # doctor reports a healthy setup.
 run_agent doctor >"$TEST_ROOT/doctor.out" || fail 'doctor found problems in a healthy setup'
 assert_contains "$TEST_ROOT/doctor.out" 'no problems found'
+
+# Cursor's CLI installer also creates an `agent` command. When the `agent` on
+# PATH is not this program, hooks and cron lines run that instead and doctor
+# says so; this program under that name is fine.
+printf '#!/bin/sh\necho not agent-sync\n' >"$MOCK_BIN/agent"
+chmod +x "$MOCK_BIN/agent"
+if run_agent doctor >"$TEST_ROOT/doctor-clash.out" 2>&1; then
+  fail 'doctor exited 0 with a different agent on PATH'
+fi
+assert_contains "$TEST_ROOT/doctor-clash.out" 'which is not agent-sync'
+rm -f "$MOCK_BIN/agent"
+ln -s "$AGENT_BIN" "$MOCK_BIN/agent"
+run_agent doctor >"$TEST_ROOT/doctor-same.out" || fail 'doctor flagged this program itself on PATH'
+assert_not_contains "$TEST_ROOT/doctor-same.out" 'agent on PATH is'
+rm -f "$MOCK_BIN/agent"
+# Another build of agent-sync (a checkout beside a brew install) is a note,
+# not a problem.
+sed 's/^VERSION=.*/VERSION="0.0.0"/' "$AGENT_BIN" >"$MOCK_BIN/agent"
+chmod +x "$MOCK_BIN/agent"
+run_agent doctor >"$TEST_ROOT/doctor-other-build.out" || fail 'doctor flagged another agent-sync build as a problem'
+assert_contains "$TEST_ROOT/doctor-other-build.out" 'note: agent on PATH is'
+assert_contains "$TEST_ROOT/doctor-other-build.out" 'no problems found'
+rm -f "$MOCK_BIN/agent"
+
+# --budget on sync sets the budget for one run and is validated up front.
+run_agent sync --budget 10 >"$TEST_ROOT/budget-flag.out" || fail 'sync --budget exited nonzero'
+assert_contains "$TEST_ROOT/budget-flag.out" 'over the 10-byte budget; run: agent compact'
+if run_agent sync --budget abc >"$TEST_ROOT/budget-bad.out" 2>&1; then
+  fail 'sync accepted a non-numeric --budget'
+fi
+assert_contains "$TEST_ROOT/budget-bad.out" 'positive number of bytes'
 
 # Per-agent targeting: --skip filters a target; AGENT_SYNC_ONLY narrows to one.
 # The env assignment lives in a subshell: `VAR=x shell_function` assignments

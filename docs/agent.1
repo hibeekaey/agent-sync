@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "agent" "1" "2026\-09\-04"
+.TH "agent" "1" "2026\-09\-05"
 .PP
 .SH NAME
 .PP
@@ -13,7 +13,9 @@ agent \- synchronize agent memory across AI coding agents
 .PP
 .SH SYNOPSIS
 .PP
-\fBagent\fR sync [\-\-synthesizer MODE] [\-\-rewrite] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
+\fBagent\fR sync [\-\-synthesizer MODE] [\-\-rewrite] [\-\-no\-compact] [\-\-budget BYTES] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
+.br
+\fBagent\fR compact [\-\-budget BYTES] [\-\-jobs N] [\-\-synthesizer MODE] [\-\-force] [\-\-keep\-all] [\-\-dry\-run]
 .br
 \fBagent\fR status
 .br
@@ -27,7 +29,7 @@ agent \- synchronize agent memory across AI coding agents
 .br
 \fBagent\fR gather [DIR]
 .br
-\fBagent\fR apply [DIR] [\-\-synthesizer MODE] [\-\-rewrite] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
+\fBagent\fR apply [DIR] [\-\-synthesizer MODE] [\-\-rewrite] [\-\-no\-compact] [\-\-budget BYTES] [\-\-dry\-run] [\-\-only LIST] [\-\-skip LIST]
 .br
 \fBagent\fR link [DIR] [\-\-import]
 .br
@@ -65,9 +67,12 @@ the whole file instead.\& A sync that leaves the file over its byte
 budget trims the largest sections back in the same run (see \fBcompact\fR;
 never with \fBdeterministic\fR, never touching an imported block or a store
 file, and not at all when the curated text alone fits the budget);
-\fB\-\-no\-compact\fR or \fBAGENT_SYNC_COMPACT=0\fR skips that.\& The first
-time a pre\-existing file agent\-sync did not write would be overwritten,
-it is preserved beside the target as <file>.\&orig.\&
+\fB\-\-no\-compact\fR or \fBAGENT_SYNC_COMPACT=0\fR skips that, and \fB\-\-budget\fR
+BYTES sets the budget for one run.\& The first time a pre\-existing file
+agent\-sync did not write would be overwritten, it is preserved beside
+the target as <file>.\&orig; agent\-sync remembers what it wrote, so a
+target still holding an earlier sync'\&s output is replaced without a
+backup and a hand edit made later still gets one.\&
 .PP
 .RE
 \fBcompact\fR [\-\-budget BYTES] [\-\-jobs N] [\-\-synthesizer MODE] [\-\-force] [\-\-keep\-all] [\-\-dry\-run]
@@ -117,7 +122,10 @@ List sync targets and whether each tool is installed.\&
 \fBdoctor\fR
 .RS 4
 Diagnose the setup: file presence, marker integrity, detected agents,
-synthesis availability, staleness.\&
+synthesis availability, the byte budget, staleness, and whether the
+\fBagent\fR on PATH is agent\-sync at all (Cursor'\&s CLI installer also
+creates an \fBagent\fR command, which a hook or cron line would run
+instead); another build of agent\-sync there is only noted.\&
 .PP
 .RE
 \fBmigrate\fR AGENT
@@ -275,7 +283,8 @@ One sync writes at a time: a run started while another holds
 .RS 4
 Byte budget for the synthesized file (default 150000).\& Reported by
 sync, enforced by status and doctor, restored by \fBcompact\fR; the
-\fB\-\-budget\fR flag of \fBcompact\fR overrides it for one run.\&
+\fB\-\-budget\fR flag of \fBsync\fR, \fBapply\fR and \fBcompact\fR overrides it for one
+run.\&
 .PP
 .RE
 \fBAGENT_SYNC_COMPACT_JOBS\fR
@@ -286,8 +295,8 @@ overrides it for one run.\&
 .RE
 \fBAGENT_SYNC_ONLY\fR, \fBAGENT_SYNC_SKIP\fR
 .RS 4
-Comma\-separated target filters used by sync, apply, status, diff, MCP sync
-and skills sync.\&
+Comma\-separated target filters used by sync, apply, compact, status,
+diff, MCP sync and skills sync.\&
 .PP
 .RE
 .SH SEE ALSO

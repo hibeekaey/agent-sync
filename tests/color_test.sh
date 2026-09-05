@@ -38,7 +38,7 @@ seed_skill
 # thing left keeping these runs plain, which is exactly what is under test.
 
 run_agent_term() {
-  TMPDIR="$TEST_TMPDIR" \
+  PATH="$SAFE_PATH" TMPDIR="$TEST_TMPDIR" \
     NO_COLOR= FORCE_COLOR= CLICOLOR_FORCE= TERM=xterm-256color \
     AGENT_SYNC_ACTIVE=0 \
     AGENT_SYNC_HOME="$AGENT_CONFIG_ROOT" \
