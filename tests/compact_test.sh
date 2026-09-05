@@ -43,6 +43,7 @@ printf '%s\n' "$first"
 told=0
 printf '%s\n' "$prompt" | grep -q 'previous attempt dropped the following' && told=1
 printf '%s\n' "$rest" | awk -v t="$target" -v mode="$mode" -v told="$told" -v n="$(printf '%s\n' "$first" | wc -c)" '
+  /^## / { next }
   /^### / { after = 1; next }
   after && /^$/ { next }
   after && /^---$/ { fm = 1; after = 0; next }
@@ -199,6 +200,9 @@ archive=$(find "$STATE_DIR/archive" -name 'stores-claude-*.tar.gz' 2>/dev/null |
 [ -n "$archive" ] || fail 'no archive was written for the promoted stores'
 tar tzf "$archive" | grep -q 'memory/shared.md$' || fail 'the archive does not list the promoted store'
 cmp -s "$CANON" "$AGENT_CONFIG_ROOT/.claude/CLAUDE.md" || fail 'compact did not redistribute the result'
+# Rewritten sections and the promoted import sit between single blank lines,
+# and the untouched section after them still starts on one.
+assert_clean_seams "$CANON"
 cp "$CANON" "$TEST_ROOT/canon.compacted"
 run_agent sync >/dev/null
 cmp -s "$CANON" "$TEST_ROOT/canon.compacted" || fail 'the sync after compact re-imported the archived store'
@@ -256,6 +260,7 @@ add_fourth_section
 : >"$SYNTH_LOG"
 run_compact good --jobs 3 --budget 3600 >"$TEST_ROOT/jobs.out" 2>"$TEST_ROOT/jobs.err" || fail "compact --jobs 3 exited nonzero: $(cat "$TEST_ROOT/jobs.out")"
 cmp -s "$CANON" "$TEST_ROOT/canon.jobs-sequential" || fail 'compact --jobs 3 produced a different canon from the sequential run'
+assert_clean_seams "$CANON"
 assert_contains "$TEST_ROOT/jobs.out" 'jobs: 3)'
 assert_not_contains "$TEST_ROOT/jobs.err" 'not a pid'
 r=$(grep -n '^## Rules: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); c=$(grep -n '^## Colours: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); m=$(grep -n '^## More: ' "$TEST_ROOT/jobs.out" | cut -d: -f1); i=$(grep -n '^import:claude: ' "$TEST_ROOT/jobs.out" | cut -d: -f1)

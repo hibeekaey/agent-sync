@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.1] - 2026-09-05
+
+### Fixed
+
+- Spliced text reads cleanly. A folded or rewritten section arrived with
+  whatever trailing blank lines the model gave it and took with it the
+  blank line that had separated it from the next heading, so a `##`
+  heading could land directly under the last line of the section above;
+  and a dropped import block left behind the blank line that had set it
+  apart, so the first fold of a file left a run of blank lines after its
+  head. Model text now sits between single blank lines, a
+  whitespace-only gap left by a dropped or rewritten block is not copied,
+  and text the model did not touch is still copied byte for byte. This
+  applies to the fold, to the sync with nothing new that drops blocks
+  folded earlier, to `compact` and to the budget pass inside `sync`.
+
 ## [1.10.0] - 2026-09-04
 
 ### Changed

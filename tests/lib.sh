@@ -62,6 +62,19 @@ assert_not_contains() {
   fi
 }
 
+# A reassembled file must read cleanly whatever trailing blank lines the
+# model's answer carried or a dropped block left behind: every "## " heading
+# sits after one blank line, and two blank lines never run together. Only for
+# files without import blocks, whose verbatim store text is not reassembled.
+assert_clean_seams() {
+  awk '
+    NR > 1 && /^## / && prev != "" { print "heading glued to the line above it: " $0; bad = 1 }
+    NR > 1 && $0 == "" && prev == "" { print "two blank lines run together before line " NR; bad = 1 }
+    { prev = $0 }
+    END { exit bad }
+  ' "$1" || fail "$1 has ragged seams"
+}
+
 run_agent() {
   PATH="$SAFE_PATH" \
     TMPDIR="$TEST_TMPDIR" \

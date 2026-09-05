@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.10.0"
+VERSION="1.10.1"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -991,6 +991,19 @@ fold_tidy() {
   ' "$1" >"$1.tidy" && mv "$1.tidy" "$1"
 }
 
+# Where model text meets the rest of the file. A folded or rewritten section
+# arrives with whatever trailing blank lines the model gave it and replaces a
+# chunk that carried the blank line before the next heading; a dropped import
+# block leaves behind the blank line that set it apart. So model text is
+# trimmed of trailing blank lines and put between single blank lines, a
+# whitespace-only gap left by a dropped or rewritten block is not copied, and
+# text the model did not touch is copied byte for byte. seam_open closes the
+# text written so far and opens exactly one blank line.
+seam_open() {
+  fold_tidy "$1"
+  [ ! -s "$1" ] || echo >>"$1"
+}
+
 # The file without its import blocks: what the model sees as context and what
 # an already-folded block is checked against before being dropped.
 fold_context() {
@@ -1115,43 +1128,66 @@ fold_assemble() {
     echo "${C_ERR}agent:${C_OFF} the fold printed the same heading twice; refusing it" >&2
     return 1
   fi
-  fa_doc="$fa_out.doc"
-  : >"$fa_doc"
-  : >"$fa_dir/used"
-  while IFS='|' read -r fa_idx fa_kind; do
-    fa_chunk=$(printf '%s/chunk-%04d' "$FOLD_SRC" "$fa_idx")
-    case "$fa_kind" in
-      import:*) continue ;;
-      section)
-        fa_head=$(head -1 "$fa_chunk" | sed 's/[[:space:]]*$//')
-        fa_part=$(grep -nxF -- "$fa_head" "$fa_dir/headings" | head -1 | cut -d: -f1)
-        if [ -z "$fa_part" ]; then
-          cat "$fa_chunk" >>"$fa_doc"
+  for fa_part in "$fa_dir"/part-*; do
+    fold_tidy "$fa_part"
+  done
+  fold_emit "$fa_dir" "$fa_out.doc" || return 1
+  mv "$fa_out.doc" "$fa_out"
+}
+
+# Reassemble the split file into $2: every import block is dropped, a section
+# whose heading is in $1/headings is replaced by that part (refused when it
+# shrank past the floor), the parts for headings the file did not have are
+# appended, and the seams heal as seam_open describes.
+fold_emit() {
+  fe_dir="$1"
+  fe_doc="$2"
+  : >"$fe_doc"
+  : >"$fe_dir/used"
+  fe_seam=0
+  while IFS='|' read -r fe_idx fe_kind; do
+    fe_chunk=$(printf '%s/chunk-%04d' "$FOLD_SRC" "$fe_idx")
+    case "$fe_kind" in
+      import:*)
+        fe_seam=1
+        continue
+        ;;
+      gap)
+        if [ "$fe_seam" -eq 1 ] && ! grep -q '[^[:space:]]' "$fe_chunk"; then
           continue
         fi
-        fa_part=$(printf '%s/part-%04d' "$fa_dir" "$fa_part")
-        fa_old=$(file_bytes "$fa_chunk")
-        fa_new=$(file_bytes "$fa_part")
-        if [ $((fa_new * 100)) -lt $((fa_old * FOLD_SECTION_FLOOR_PERCENT)) ]; then
-          echo "${C_ERR}agent:${C_OFF} the fold shrank \"$fa_head\" from $fa_old to $fa_new bytes; a fold adds, so that is a summary, and it is refused" >&2
-          return 1
-        fi
-        cat "$fa_part" >>"$fa_doc"
-        printf '%s\n' "$fa_head" >>"$fa_dir/used"
         ;;
-      *) cat "$fa_chunk" >>"$fa_doc" ;;
+      section)
+        fe_head=$(head -1 "$fe_chunk" | sed 's/[[:space:]]*$//')
+        fe_part=$(grep -nxF -- "$fe_head" "$fe_dir/headings" | head -1 | cut -d: -f1)
+        if [ -n "$fe_part" ]; then
+          fe_part=$(printf '%s/part-%04d' "$fe_dir" "$fe_part")
+          fe_old=$(file_bytes "$fe_chunk")
+          fe_new=$(file_bytes "$fe_part")
+          if [ $((fe_new * 100)) -lt $((fe_old * FOLD_SECTION_FLOOR_PERCENT)) ]; then
+            echo "${C_ERR}agent:${C_OFF} the fold shrank \"$fe_head\" from $fe_old to $fe_new bytes; a fold adds, so that is a summary, and it is refused" >&2
+            return 1
+          fi
+          seam_open "$fe_doc"
+          cat "$fe_part" >>"$fe_doc"
+          printf '%s\n' "$fe_head" >>"$fe_dir/used"
+          fe_seam=1
+          continue
+        fi
+        ;;
     esac
+    [ "$fe_seam" -eq 0 ] || seam_open "$fe_doc"
+    cat "$fe_chunk" >>"$fe_doc"
+    fe_seam=0
   done <"$FOLD_SRC/manifest"
-  fa_i=0
-  while IFS= read -r fa_head; do
-    fa_i=$((fa_i + 1))
-    grep -qxF -- "$fa_head" "$fa_dir/used" && continue
-    [ "$(tail -c 1 "$fa_doc" | wc -l | tr -d ' ')" -eq 1 ] || echo >>"$fa_doc"
-    echo >>"$fa_doc"
-    cat "$(printf '%s/part-%04d' "$fa_dir" "$fa_i")" >>"$fa_doc"
-  done <"$fa_dir/headings"
-  fold_tidy "$fa_doc"
-  mv "$fa_doc" "$fa_out"
+  fe_i=0
+  while IFS= read -r fe_head; do
+    fe_i=$((fe_i + 1))
+    grep -qxF -- "$fe_head" "$fe_dir/used" && continue
+    seam_open "$fe_doc"
+    cat "$(printf '%s/part-%04d' "$fe_dir" "$fe_i")" >>"$fe_doc"
+  done <"$fe_dir/headings"
+  fold_tidy "$fe_doc"
 }
 
 # Remember what was folded, so the next sync drops the same block unasked.
@@ -1167,9 +1203,12 @@ fold_record() {
 # drop them without a model.
 fold_drop_done() {
   ensure_private_tmp
+  fd_dir="$PRIVATE_TMP/fold-out"
+  rm -rf "$fd_dir"
+  mkdir -p "$fd_dir"
+  : >"$fd_dir/headings"
   fd_out="$PRIVATE_TMP/fold-drop"
-  cp "$FOLD_SRC/context" "$fd_out"
-  fold_tidy "$fd_out"
+  fold_emit "$fd_dir" "$fd_out"
   accept_synth_output "$FOLD_DONE import block(s) folded earlier" "$fd_out" "removed:"
 }
 
@@ -1576,6 +1615,7 @@ compact_rewrite() {
       echo "the synthesizer returned nothing" >&2
       return 1
     }
+    fold_tidy "$cr_out"
     case "$(head -1 "$cr_out")" in
       "$cr_head"*) ;;
       *)
@@ -1922,23 +1962,25 @@ compact_run() {
     echo "${C_ERR}agent:${C_OFF} could not create a temporary file beside $SRC" >&2
     exit 1
   }
+  # A promoted import becomes a plain section with no markers, so the next
+  # sync has nothing to refresh. It and every rewritten section sit between
+  # single blank lines and the rest is copied byte for byte (see seam_open).
+  seam=0
   while IFS='|' read -r idx kind; do
     chunk="$cdir/chunk-$(printf '%04d' "$idx")"
     if [ -f "$chunk.new" ]; then
-      case "$kind" in
-        import:*)
-          # A promoted import becomes a plain section: blank line, notes,
-          # blank line, no markers, so the next sync has nothing to refresh.
-          echo
-          cat "$chunk.new"
-          echo
-          ;;
-        *) cat "$chunk.new" ;;
-      esac
-    else
-      cat "$chunk"
+      seam_open "$CANON_TMP"
+      cat "$chunk.new" >>"$CANON_TMP"
+      seam=1
+      continue
     fi
-  done <"$cdir/manifest" >"$CANON_TMP"
+    if [ "$kind" = gap ] && [ "$seam" -eq 1 ] && ! grep -q '[^[:space:]]' "$chunk"; then
+      continue
+    fi
+    [ "$seam" -eq 0 ] || seam_open "$CANON_TMP"
+    cat "$chunk" >>"$CANON_TMP"
+    seam=0
+  done <"$cdir/manifest"
   [ "$COMPACT_BACKUP" -eq 0 ] || cp "$SRC" "$SRC.bak"
   mv "$CANON_TMP" "$SRC"
   CANON_TMP=""

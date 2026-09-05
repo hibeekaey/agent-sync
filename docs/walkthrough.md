@@ -105,9 +105,8 @@ synthesis via claude (fable, effort low): folding 3 new import block(s); the ans
 synthesized via: claude (fable) (previous file at ~/.claude/CLAUDE.md.bak)
 codex: pre-existing file preserved at ~/.codex/AGENTS.md.orig
 codex: synced -> ~/.codex/AGENTS.md
-gemini: synced -> ~/.gemini/GEMINI.md
 ...
-synthesized file: 306 of 150000 bytes
+synthesized file: 293 of 150000 bytes
 ```
 
 Ten seconds on this file. On a terminal a dot lands on stderr every 30
@@ -121,18 +120,13 @@ the variable name survived verbatim.
 
 Always run tests before pushing.
 
-
-
-
 ## Promoted from claude
 
-- Staging API: `https://api.staging.example.com`. Export `STAGING_TOKEN` before running the smoke tests.
-
+- Staging API: `https://api.staging.example.com`; export `STAGING_TOKEN` before the smoke tests.
 
 ## Promoted from codex
 
 - User prefers tables over prose.
-
 
 ## Promoted from goose
 
@@ -164,7 +158,7 @@ synthesis: nothing new to fold (3 import block(s) were folded before and their s
 removed: 3 import block(s) folded earlier (previous file at ~/.claude/CLAUDE.md.bak)
 codex: synced -> ~/.codex/AGENTS.md
 ...
-synthesized file: 306 of 150000 bytes
+synthesized file: 293 of 150000 bytes
 ```
 
 No model was called: each re-imported block had the same fingerprint as
@@ -253,7 +247,7 @@ Diagnosis without changes.
 
 ```console
 $ agent doctor
-agent v1.10.0
+agent v1.10.1
 synthesized file: ~/.claude/CLAUDE.md
 ok: synthesized file exists (46 lines)
 ok: 5 sync target(s) detected (agent targets lists them)
@@ -266,7 +260,7 @@ A broken setup, exit 1:
 
 ```console
 $ agent doctor
-agent v1.10.0
+agent v1.10.1
 synthesized file: ~/.claude/CLAUDE.md
 ok: synthesized file exists (38 lines)
 PROBLEM: malformed import markers for codex in ~/.claude/CLAUDE.md
@@ -361,14 +355,14 @@ synthesized via: claude (fable) (previous file at ~/.claude/CLAUDE.md.bak)
 codex: synced -> ~/.codex/AGENTS.md
 gemini: synced -> ~/.gemini/GEMINI.md
 ...
-synthesized file: 328 of 150000 bytes
+synthesized file: 317 of 150000 bytes
 ```
 
 One edit travels three hops: into the agent's own store, into the memory
 file, then out to every agent. It reported one update from four staged
 files because it compares checksums and writes only what changed, and the
 fold that followed had one new block to work on: the other two were folded
-before and were dropped unasked. Eleven seconds, and the section reads:
+before and were dropped unasked. Nine seconds, and the section reads:
 
 ```markdown
 ## Promoted from codex
@@ -418,44 +412,40 @@ candidates, and the goal sits 5% under the budget so the next import fits.
 ```console
 $ agent compact --budget 3500
 compact: 4615 bytes, budget 3500, goal 3325; trimming the largest sections first, 2 of them, via claude (mode: stable, jobs: 4)
-## Deploy runbook: 2254 -> 1728 bytes
-## Billing service notes: 2163 -> 1806 bytes
+## Deploy runbook: 2254 -> 1639 bytes
+## Billing service notes: 2163 -> 1789 bytes
 codex: synced -> ~/.codex/AGENTS.md
 gemini: synced -> ~/.gemini/GEMINI.md
 ...
-compact: 4615 -> 3732 bytes (previous file at ~/.claude/CLAUDE.md.bak)
-still 232 bytes over the 3500-byte budget; run agent compact again
+compact: 4615 -> 3627 bytes (previous file at ~/.claude/CLAUDE.md.bak)
+still 127 bytes over the 3500-byte budget; run agent compact again
 $ echo $?
 1
 ```
 
 Both sections were rewritten at once, four at a time being the default,
-in 21 seconds. A rewrite is accepted only if it starts with the same
+in 18 seconds. A rewrite is accepted only if it starts with the same
 heading, is smaller, is at least a quarter of the original and still
 contains every URL, hostname, environment variable and long id the
 original had; all sixteen in this file survived. A rewrite that lands
 within 25% over its target is accepted rather than re-asked, which is why
-this pass stopped 232 bytes short and said so with exit 1.
+this pass stopped 127 bytes short and said so with exit 1.
 
 What a rewrite keeps and what it may forget, from the runbook:
 
 ```markdown
 ## Deploy runbook
 
-The billing API deploys from GitHub Actions on every merge to `main`.
-`.github/workflows/deploy.yml` builds the image, pushes it to
-`europe-west1-docker.pkg.dev/acme-prod/billing/api`, and rolls the Cloud Run
-service `billing-api-7f3e9a2c1b` in `europe-west1` (~6 min). Deploys are
-frozen on the last two business days of each quarter (invoicing) via a
-branch protection rule.
+Billing API deploys from GitHub Actions on every merge to `main` via `.github/workflows/deploy.yml`: builds the image, pushes to `europe-west1-docker.pkg.dev/acme-prod/billing/api`, rolls Cloud Run service `billing-api-7f3e9a2c1b` in `europe-west1` (~6 min). Deploys are frozen on the last two business days of each quarter (invoicing) — enforced by branch protection.
+
+- **Migrations**: dry-run first against the replica. `DATABASE_URL` = `db-replica.internal.example.com` for dry run, `db-primary.internal.example.com` for real. Never run from a laptop; only the workflow's migration job has write credentials. Follow expand → migrate → contract; PR template asks whether the migration takes a lock (non-nullable column without default locks the table).
+- **Secrets**: `DEPLOY_TOKEN` (Doppler project `billing`, config `prd`) and `GCP_WORKLOAD_IDENTITY_PROVIDER` as repository secrets. On rotation: update Doppler first, then re-run the failed job. Never paste the token into the workflow file. `continue-on-error` is forbidden in deploy jobs (masks an expired token).
 ...
-- Migrations follow expand, migrate, contract; the PR template asks whether
-  the migration takes a lock (no non-nullable columns without a default).
-- `continue-on-error` is forbidden in deploy jobs.
 ```
 
-The two incident stories that taught those last two rules are gone; the
-rules, the service id, both database hostnames and every URL stayed.
+The two dated incident stories are gone and the rules they taught survive
+as a clause each; the service id, both database hostnames and every URL
+stayed.
 `--keep-all` forbids forgetting and protects every backtick span and bare
 letter-and-digit token as well. Run by hand, `compact` also promotes raw
 imported blocks into curated notes and archives their store files to
