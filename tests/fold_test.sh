@@ -283,4 +283,17 @@ assert_contains "$TEST_ROOT/dry.out" 'dry-run: would synthesize'
 cmp -s "$CANON" "$TEST_ROOT/before-dry.md" || fail 'a dry run changed the file'
 [ "$(claude_calls)" -eq 0 ] || fail 'a dry run called the model'
 
+# The fold prompt carries the practice-not-status scope rules. The mock cannot
+# test that a model obeys them, so what is pinned is that they are actually
+# sent: without them the model folds project status into a cross-project file,
+# which is what put a project's resume point and deploy state into the canon.
+printf 'fold\n' >"$FOLD_MODE"
+printf 'alpha scope probe\n' >"$CLAUDE_A"
+run_fold sync >/dev/null 2>&1
+assert_contains "$FOLD_PROMPT" 'CROSS-PROJECT PRACTICE'
+assert_contains "$FOLD_PROMPT" 'never the project status it records'
+assert_contains "$FOLD_PROMPT" 'true and useful in six months'
+assert_contains "$FOLD_PROMPT" 'Never open a section named after a project'
+assert_contains "$FOLD_PROMPT" 'SURVIVES the practice test'
+
 echo 'fold tests passed'

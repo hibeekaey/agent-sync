@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.11.0"
+VERSION="1.12.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -1080,12 +1080,27 @@ EOF
   as it should now read: everything already there that the rules keep, with
   the new facts folded in where they belong. Do not print a section that does
   not change, and do not print the file's title or anything else.
-- A new memory that fits no existing section goes into the section whose
-  heading starts with "$FOLD_HEADING <agent>" if the file has one (print that
-  whole section), otherwise into a new section headed exactly
-  "$FOLD_HEADING <agent>".
+- A new memory that SURVIVES the practice test below and fits no existing
+  section goes into the section whose heading starts with
+  "$FOLD_HEADING <agent>" if the file has one (print that whole section),
+  otherwise into a new section headed exactly "$FOLD_HEADING <agent>". Never
+  use that section as a home for status a rule below tells you to drop.
 - Resolve a conflict in favor of the newest information. Do not print the new
   memories as a block; do not print their file paths or YAML frontmatter.
+- This file is CROSS-PROJECT PRACTICE: how to work on this machine, plus hard
+  technical facts that stay true. Fold in the PRACTICE a new memory teaches,
+  never the project status it records. A fact belongs only if it would still
+  be true and useful in six months with nobody updating it.
+- So drop, and print no section for: what is deployed, released or merged;
+  where work stopped; resume points and "nothing in flight" notes; backlog,
+  percentage and open/closed counts; open, blocked, muted, parked or
+  "do not re-raise" item lists; run, task and workflow ids; and anything that
+  has to be edited when work moves on. A memory that is entirely status
+  contributes nothing to this file -- fold none of it.
+- Never open a section named after a project, and never add project status to
+  a section that exists. Where a memory teaches a durable lesson through a
+  project's specifics, keep the lesson and the technical identifiers it needs,
+  and leave the project's progress out.
 EOF
     synth_dropped_note "${2:-}"
     echo
