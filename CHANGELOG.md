@@ -18,6 +18,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   rules just told the model to drop. Without this the synthesizer did as it was
   asked and merged a project's resume point and deploy state into the file every
   agent reads, which then had to be cut out by hand.
+- A fold whose new memories are all project status now has a way to say so.
+  The model prints `NOTHING TO FOLD`, the import blocks are dropped and the
+  curated text is left untouched. Before, an answer with no changed section was
+  refused as a failure, so every synthesizer that obeyed the new rules was
+  treated as broken and the raw status stayed in the file to be retried on the
+  next sync. That answer also skips the identifier check, which it would
+  otherwise always fail: the emitted document is the context itself, so the
+  only identifiers it can be missing are the ones the dropped import brought.
 
 ## [1.11.0] - 2026-09-05
 
