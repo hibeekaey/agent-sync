@@ -16,7 +16,7 @@ if [ "${AGENT_SYNC_ACTIVE:-0}" = "1" ]; then
   exit 0
 fi
 
-VERSION="1.11.0"
+VERSION="1.12.0"
 AGENT_HOME="${AGENT_SYNC_HOME:-$HOME}"
 DEFAULT_SRC="$AGENT_HOME/.claude/CLAUDE.md"
 SRC="${AGENT_SYNC_SOURCE:-$DEFAULT_SRC}"
@@ -55,6 +55,11 @@ SYNTH_SCOPE=full
 SYNTH_ACCEPTED=0
 FOLD_SRC=""
 FOLD_NEW=0
+# What the model prints when the scope rules leave no section to change.
+FOLD_NOOP_TOKEN="NOTHINGTOFOLD"
+# Set by fold_assemble when the answer was that token: the emitted document is
+# the context itself, so nothing the curated file carried can have been lost.
+FOLD_WAS_NOOP=0
 FOLD_DONE=0
 
 # Colour is strictly additive: the escapes stay empty unless stdout is a
@@ -861,11 +866,18 @@ try_synthesizer() {
   fi
   invoke_synthesizer "$kind" "$prompt" "$out" "$ts_model" || return 1
   strip_synth_preamble "$out"
+  FOLD_WAS_NOOP=0
   if [ "$SYNTH_SCOPE" = fold ]; then
     fold_assemble "$out" || return 1
   fi
   valid_synth_output "$out" "$SRC" || return 1
   ensure_private_tmp
+  # A no-op fold emitted the context verbatim, so the only identifiers it can
+  # be "missing" are the ones the dropped import brought — which is what the
+  # scope rules asked for. Checking it would refuse every compliant answer.
+  if [ "$FOLD_WAS_NOOP" -eq 1 ]; then
+    return 0
+  fi
   identifier_source "$SRC" >"$PRIVATE_TMP/synth-ids"
   ts_missing=$(missing_identifiers "$PRIVATE_TMP/synth-ids" "$out")
   if [ -n "$ts_missing" ]; then
@@ -1080,12 +1092,28 @@ EOF
   as it should now read: everything already there that the rules keep, with
   the new facts folded in where they belong. Do not print a section that does
   not change, and do not print the file's title or anything else.
-- A new memory that fits no existing section goes into the section whose
-  heading starts with "$FOLD_HEADING <agent>" if the file has one (print that
-  whole section), otherwise into a new section headed exactly
-  "$FOLD_HEADING <agent>".
+- A new memory that SURVIVES the practice test below and fits no existing
+  section goes into the section whose heading starts with
+  "$FOLD_HEADING <agent>" if the file has one (print that whole section),
+  otherwise into a new section headed exactly "$FOLD_HEADING <agent>". Never
+  use that section as a home for status a rule below tells you to drop.
 - Resolve a conflict in favor of the newest information. Do not print the new
   memories as a block; do not print their file paths or YAML frontmatter.
+- This file is CROSS-PROJECT PRACTICE: how to work on this machine, plus hard
+  technical facts that stay true. Fold in the PRACTICE a new memory teaches,
+  never the project status it records. A fact belongs only if it would still
+  be true and useful in six months with nobody updating it.
+- So drop, and print no section for: what is deployed, released or merged;
+  where work stopped; resume points and "nothing in flight" notes; backlog,
+  percentage and open/closed counts; open, blocked, muted, parked or
+  "do not re-raise" item lists; run, task and workflow ids; and anything that
+  has to be edited when work moves on. A memory that is entirely status
+  contributes nothing to this file -- fold none of it. If that leaves no
+  section to change at all, print exactly "NOTHING TO FOLD" and nothing else.
+- Never open a section named after a project, and never add project status to
+  a section that exists. Where a memory teaches a durable lesson through a
+  project's specifics, keep the lesson and the technical identifiers it needs,
+  and leave the project's progress out.
 EOF
     synth_dropped_note "${2:-}"
     echo
@@ -1130,6 +1158,18 @@ fold_assemble() {
     END { if (n > 0) close(file) }
   ' "$fa_out"
   [ -f "$fa_dir/headings" ] || : >"$fa_dir/headings"
+  # Every memory in the import was status the scope rules tell the model to
+  # drop, so no section changes. That is a correct answer, not a failed one:
+  # accept it and let fold_emit write the file back without the import blocks.
+  if [ "$(tr -d '[:space:]' <"$fa_out")" = "$FOLD_NOOP_TOKEN" ]; then
+    FOLD_WAS_NOOP=1
+    : >"$fa_dir/headings"
+    : >"$fa_dir/stray"
+    fold_emit "$fa_dir" "$fa_out.doc" || return 1
+    mv "$fa_out.doc" "$fa_out"
+    echo "${C_DIM}fold: every new memory was project status; nothing folded${C_OFF}" >&2
+    return 0
+  fi
   if [ -s "$fa_dir/stray" ]; then
     echo "${C_ERR}agent:${C_OFF} the fold answered with text before its first section; refusing it" >&2
     return 1

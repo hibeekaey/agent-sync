@@ -283,4 +283,40 @@ assert_contains "$TEST_ROOT/dry.out" 'dry-run: would synthesize'
 cmp -s "$CANON" "$TEST_ROOT/before-dry.md" || fail 'a dry run changed the file'
 [ "$(claude_calls)" -eq 0 ] || fail 'a dry run called the model'
 
+# The fold prompt carries the practice-not-status scope rules. The mock cannot
+# test that a model obeys them, so what is pinned is that they are actually
+# sent: without them the model folds project status into a cross-project file,
+# which is what put a project's resume point and deploy state into the canon.
+printf 'fold\n' >"$FOLD_MODE"
+printf 'alpha scope probe\n' >"$CLAUDE_A"
+run_fold sync >/dev/null 2>&1
+assert_contains "$FOLD_PROMPT" 'CROSS-PROJECT PRACTICE'
+assert_contains "$FOLD_PROMPT" 'never the project status it records'
+assert_contains "$FOLD_PROMPT" 'true and useful in six months'
+assert_contains "$FOLD_PROMPT" 'Never open a section named after a project'
+assert_contains "$FOLD_PROMPT" 'SURVIVES the practice test'
+assert_contains "$FOLD_PROMPT" 'NOTHING TO FOLD'
+
+# An import that is entirely status legitimately changes no section. The model
+# says so, and the sync accepts it: the import block is dropped, the curated
+# text is untouched, and the run does not fall through to the next synthesizer.
+cat >"$MOCK_BIN/claude" <<'NOOPMOCK'
+#!/bin/sh
+printf 'claude %s\n' "$*" >>"$SYNTH_LOG"
+cat >/dev/null
+printf 'NOTHING TO FOLD\n'
+NOOPMOCK
+chmod +x "$MOCK_BIN/claude"
+# The status carries a long alphanumeric id, the shape stable mode protects.
+# Without the no-op exemption the guard reports it missing and the run falls
+# down the ladder, so this token is what makes the assertion below real.
+printf 'status only: run wf92024077a93b deployed on Tuesday, nothing in flight\n' >"$CLAUDE_A"
+cp "$CANON" "$TEST_ROOT/before-noop.md"
+: >"$SYNTH_LOG"
+run_fold sync >"$TEST_ROOT/noop.out" 2>&1
+assert_not_contains "$CANON" 'agent-sync:begin imported'
+assert_not_contains "$CANON" 'nothing in flight'
+grep -q 'v9.9.9' "$CANON" && fail 'a status-only import was folded into the file'
+[ "$(claude_calls)" -eq 1 ] || fail 'a no-op fold should be accepted, not retried down the rungs'
+
 echo 'fold tests passed'
