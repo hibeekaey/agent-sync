@@ -13,9 +13,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   complete:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name }}
