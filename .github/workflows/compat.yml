@@ -18,9 +18,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   grammar:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -77,19 +82,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: install ${{ matrix.tool }}
+        env:
+          TOOL: ${{ matrix.tool }}
+          PACKAGE: ${{ matrix.package }}
         run: |
           # Retry for transient registry failures. Exhausting the retries
           # means the package is gone or renamed, which is a real finding.
           for attempt in 1 2 3; do
-            if npm install -g ${{ matrix.package }}; then
+            if npm install -g "$PACKAGE"; then
               exit 0
             fi
             echo "install attempt $attempt failed; retrying"
             sleep $((attempt * 10))
           done
-          echo "::error::${{ matrix.package }} could not be installed after" \
+          echo "::error::$PACKAGE could not be installed after" \
             "3 attempts. If it was renamed or withdrawn, agent-sync's" \
-            "support for ${{ matrix.tool }} needs updating." >&2
+            "support for $TOOL needs updating." >&2
           exit 1
       # Matching lives in a script so it can be unit tested; see
       # tests/compat_test.sh, which pins the substring false positives.
