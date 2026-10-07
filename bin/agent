@@ -2294,11 +2294,20 @@ $(targets)
 EOF
   over=0
   budget_report || over=1
+  damaged=0
+  if [ -z "${STATUS_SKIP_SKILLS:-}" ]; then
+    sd_list=$(skills_damage_report) || damaged=1
+    if [ "$damaged" -eq 1 ]; then
+      echo "${C_BOLD}${C_WARN}DAMAGED${C_OFF} skill files (Claude rewritten to Codex by an import tool); agent skills sync refuses them:"
+      printf '%s\n' "$sd_list" | sed 's/^/  /'
+    fi
+  fi
   [ "$fails" -eq 0 ] || {
     echo "${C_WARN}$fails target(s) stale; run: agent sync${C_OFF}"
     exit 1
   }
   [ "$over" -eq 0 ] || exit 1
+  [ "$damaged" -eq 0 ] || exit 1
 }
 
 cmd_targets() {
@@ -2637,8 +2646,13 @@ EOF
     echo "${C_ERR}PROBLEM:${C_OFF} synthesized file is $(file_bytes "$SRC") bytes, over the $(compact_budget)-byte budget (agent compact fixes)"
     problems=$((problems + 1))
   fi
-  if [ -f "$SRC" ] && ! (cmd_status) >/dev/null 2>&1; then
+  if [ -f "$SRC" ] && ! (STATUS_SKIP_SKILLS=1 cmd_status) >/dev/null 2>&1; then
     echo "${C_ERR}PROBLEM:${C_OFF} targets are stale (agent diff shows details; agent sync fixes)"
+    problems=$((problems + 1))
+  fi
+  if ! sd_list=$(skills_damage_report); then
+    echo "${C_ERR}PROBLEM:${C_OFF} skill files rewritten from Claude to Codex by an import tool; skills sync refuses them:"
+    printf '%s\n' "$sd_list" | sed 's/^/  /'
     problems=$((problems + 1))
   fi
   if [ "$problems" -eq 0 ]; then
@@ -3475,6 +3489,28 @@ zed|$AGENT_HOME/.config/zed|$AGENT_HOME/.agents/skills
 EOF
 }
 
+# Only text no legitimate skill can contain: Codex has no -p flag and no product is "Codex Code" or "Codex.ai".
+SKILL_DAMAGE_RE='Codex Code|Codex, Codex|Codex -p|Codex\.ai|Codex.s (judg|verdict)'
+
+# Lists files under one skill directory that carry the damage; skips .trash.
+skill_damaged_files() {
+  find "$1" -name .trash -prune -o -type f -exec grep -lIE "$SKILL_DAMAGE_RE" {} + 2>/dev/null || true
+}
+
+# Prints every damaged skill file under the source and returns 1 if any.
+skills_damage_report() {
+  sdr_bad=0
+  [ -d "$SKILLS_SOURCE" ] || return 0
+  for sdr_skill in "$SKILLS_SOURCE"/*/; do
+    [ -f "$sdr_skill/SKILL.md" ] || continue
+    sdr_files=$(skill_damaged_files "${sdr_skill%/}")
+    [ -n "$sdr_files" ] || continue
+    sdr_bad=1
+    printf '%s\n' "$sdr_files"
+  done
+  [ "$sdr_bad" -eq 0 ]
+}
+
 skill_is_owned() {
   grep -qxF "$1" "$SKILLS_OWNED" 2>/dev/null
 }
@@ -3560,6 +3596,7 @@ cmd_skills() {
   : >"$eligible"
   count=0
   linked=0
+  refused=0
   for skill in "$SKILLS_SOURCE"/*/; do
     [ -f "$skill/SKILL.md" ] || continue
     skill_path=${skill%/}
@@ -3573,9 +3610,20 @@ cmd_skills() {
       linked=$((linked + 1))
       continue
     fi
+    damaged_files=$(skill_damaged_files "$skill_path")
+    if [ -n "$damaged_files" ]; then
+      echo "skills: ${C_ERR}refusing $(basename "$skill_path")${C_OFF}: text rewritten by an import tool (Claude changed to Codex)" >&2
+      printf '%s\n' "$damaged_files" | sed 's/^/  /' >&2
+      refused=$((refused + 1))
+      continue
+    fi
     printf '%s\n' "$skill_path" >>"$eligible"
     count=$((count + 1))
   done
+  if [ "$count" -eq 0 ] && [ "$refused" -gt 0 ]; then
+    echo "${C_ERR}agent:${C_OFF} every skill was refused as damaged; nothing synced" >&2
+    exit 1
+  fi
   if [ "$count" -eq 0 ]; then
     echo "${C_DIM}no skills found in $SKILLS_SOURCE (a skill is a directory with SKILL.md)${C_OFF}"
     exit 0
@@ -3627,6 +3675,10 @@ EOF
     echo "${C_DIM}source: $SKILLS_SOURCE ($count skill(s); $linked skipped as symbolic links)${C_OFF}"
   else
     echo "${C_DIM}source: $SKILLS_SOURCE ($count skill(s))${C_OFF}"
+  fi
+  if [ "$refused" -gt 0 ]; then
+    echo "${C_ERR}skills: $refused skill(s) refused as damaged; fix the source, then rerun${C_OFF}" >&2
+    return 1
   fi
   [ "$skill_failures" -eq 0 ] || return 1
 }

@@ -638,6 +638,11 @@ Symlinked source skills are skipped rather than copied, since a symlink
 can resolve anywhere, but they do not block the rest: plugin-installed
 skills are routinely symlinks into a shared directory.
 
+A skill whose text an import tool rewrote from Claude to Codex (`Codex
+Code`, `Codex -p`, `Codex.ai`) is refused too: `agent skills sync` lists
+each damaged file on stderr, still syncs the clean skills, and exits
+nonzero. `agent status` and `agent doctor` report the same files.
+
 Propagation is additive. A skill that exists only in one agent stays, and
 a same-named skill agent-sync did not create is reported as a collision
 and left alone rather than overwritten.
