@@ -81,4 +81,39 @@ assert_contains "$TEST_ROOT/skills-symlink.out" 'qwen: skipped (skills dir resol
 rm "$AGENT_CONFIG_ROOT/.qwen/skills"
 mkdir -p "$AGENT_CONFIG_ROOT/.qwen/skills"
 
+# Skill text an import tool rewrote from Claude to Codex is refused, reported
+# by path, makes the command exit nonzero, and never blocks the clean skills.
+mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs" "$AGENT_CONFIG_ROOT/.claude/skills/clean-skill"
+printf -- '---\nname: damaged-skill\n---\nbody\n' >"$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/SKILL.md"
+printf 'Run `Codex -p "Read task.md"` from Codex Code\n' >"$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs/usage.md"
+printf -- '---\nname: clean-skill\n---\nCodex exec and Claude Code are both fine\n' >"$AGENT_CONFIG_ROOT/.claude/skills/clean-skill/SKILL.md"
+mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/clean-skill/.trash"
+printf 'Codex Code\n' >"$AGENT_CONFIG_ROOT/.claude/skills/clean-skill/.trash/old.md"
+if run_agent skills sync >"$TEST_ROOT/skills-damage.out" 2>"$TEST_ROOT/skills-damage.err"; then
+  fail 'skills sync exited zero with a damaged skill in the source'
+fi
+[ ! -e "$AGENT_CONFIG_ROOT/.codex/skills/damaged-skill" ] ||
+  fail 'skills sync copied a damaged skill'
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/clean-skill/SKILL.md" 'Codex exec'
+assert_contains "$TEST_ROOT/skills-damage.err" "$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs/usage.md"
+assert_not_contains "$TEST_ROOT/skills-damage.err" 'clean-skill/.trash'
+
+# status and doctor report the damage as a problem.
+if run_agent status >"$TEST_ROOT/skills-damage-status.out" 2>&1; then
+  fail 'status exited zero with a damaged skill in the source'
+fi
+assert_contains "$TEST_ROOT/skills-damage-status.out" 'DAMAGED'
+assert_contains "$TEST_ROOT/skills-damage-status.out" "$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs/usage.md"
+if run_agent doctor >"$TEST_ROOT/skills-damage-doctor.out" 2>&1; then
+  fail 'doctor exited zero with a damaged skill in the source'
+fi
+assert_contains "$TEST_ROOT/skills-damage-doctor.out" 'rewritten from Claude to Codex'
+
+# Repaired text syncs again and status is clean.
+printf 'Run `claude -p "Read task.md"` from Claude Code\n' >"$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs/usage.md"
+run_agent skills sync >/dev/null || fail 'skills sync refused a repaired skill'
+assert_contains "$AGENT_CONFIG_ROOT/.codex/skills/damaged-skill/refs/usage.md" 'claude -p'
+run_agent status >/dev/null || fail 'status failed after the skill was repaired'
+rm -rf "$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill" "$AGENT_CONFIG_ROOT/.claude/skills/clean-skill"
+
 echo 'skills tests passed'
