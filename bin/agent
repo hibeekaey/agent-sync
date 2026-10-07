@@ -3489,9 +3489,7 @@ zed|$AGENT_HOME/.config/zed|$AGENT_HOME/.agents/skills
 EOF
 }
 
-# Text an import tool leaves after rewriting "Claude" to "Codex"; each
-# pattern is impossible in legitimate prose (Codex has no -p flag, no product
-# is "Codex Code" or "Codex.ai").
+# Only text no legitimate skill can contain: Codex has no -p flag and no product is "Codex Code" or "Codex.ai".
 SKILL_DAMAGE_RE='Codex Code|Codex, Codex|Codex -p|Codex\.ai|Codex.s (judg|verdict)'
 
 # Lists files under one skill directory that carry the damage; skips .trash.

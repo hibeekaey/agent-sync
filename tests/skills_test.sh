@@ -81,8 +81,7 @@ assert_contains "$TEST_ROOT/skills-symlink.out" 'qwen: skipped (skills dir resol
 rm "$AGENT_CONFIG_ROOT/.qwen/skills"
 mkdir -p "$AGENT_CONFIG_ROOT/.qwen/skills"
 
-# Skill text an import tool rewrote from Claude to Codex is refused, reported
-# by path, makes the command exit nonzero, and never blocks the clean skills.
+# A skill rewritten from Claude to Codex is refused by path with a nonzero exit; clean skills still sync.
 mkdir -p "$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs" "$AGENT_CONFIG_ROOT/.claude/skills/clean-skill"
 printf -- '---\nname: damaged-skill\n---\nbody\n' >"$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/SKILL.md"
 printf 'Run `Codex -p "Read task.md"` from Codex Code\n' >"$AGENT_CONFIG_ROOT/.claude/skills/damaged-skill/refs/usage.md"
