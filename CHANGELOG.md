@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-25
+
 ### Added
 
 - `agent skills sync` refuses skills an import tool rewrote from Claude to Codex.

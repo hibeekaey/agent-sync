@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016  # skill fixtures carry literal backticks
 # Skills propagation: additive updates, unmanaged collisions, and the
 # symlink paths that could otherwise destroy canonical skills.
 set -eu
