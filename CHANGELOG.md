@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.13.0] - 2026-10-25
+
+### Added
+
+- `agent skills sync` refuses skills an import tool rewrote from Claude to Codex.
+- `agent status` and `agent doctor` report rewritten skill files as a problem.
+
 ## [1.12.0] - 2026-09-21
 
 ### Changed

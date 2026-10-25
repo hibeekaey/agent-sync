@@ -45,7 +45,7 @@ flows back into the canon.
 | Verb | What it does |
 | --- | --- |
 | `agent sync [--synthesizer MODE] [--dry-run]` | The full round trip: gather, synthesize, redistribute |
-| `agent status` | Parity check; exit 1 if any agent is stale (cron-friendly) |
+| `agent status` | Parity check; exit 1 if any agent is stale or a skill file is damaged (cron-friendly) |
 | `agent diff` | Stale targets as unified diffs; exit 1 on drift (CI gate) |
 | `agent doctor` | Diagnose the setup and report problems |
 | `agent migrate <agent>` | Fold just one agent's stores in, then redistribute |
@@ -384,7 +384,9 @@ Beyond memory, `agent` syncs the rest of your agent setup:
   directory, following the `gh skill` agent registry mapping. Target-only
   skills remain. Identical copies are adopted, agent-sync-owned copies update
   atomically, and conflicting unmanaged copies are left untouched with a
-  nonzero exit.
+  nonzero exit. A skill whose text an import tool rewrote from Claude to
+  Codex (`Codex Code`, `Codex -p`, `Codex.ai`) is refused with each file
+  listed on stderr and a nonzero exit; clean skills still sync.
 - **Memory packs** (`agent pack`): install shareable markdown packs from any
   GitHub repo, pinned to a commit in a lockfile, folded into the synthesized
   file on every sync and cleanly removable.

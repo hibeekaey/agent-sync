@@ -78,8 +78,9 @@ installed agent's global instructions slot.
 	is still over budget afterwards.
 
 *status*
-	Per-agent parity check. Exits 1 when anything is stale or the
-	synthesized file is over its byte budget (cron friendly).
+	Per-agent parity check. Exits 1 when anything is stale, the
+	synthesized file is over its byte budget, or a skill file in the
+	canonical skills directory is damaged (cron friendly).
 
 *diff*
 	Show stale targets as unified diffs. Exits 1 when anything is stale
@@ -90,7 +91,8 @@ installed agent's global instructions slot.
 
 *doctor*
 	Diagnose the setup: file presence, marker integrity, detected agents,
-	synthesis availability, the byte budget, staleness, and whether the
+	synthesis availability, the byte budget, staleness, skill files an
+	import tool rewrote from Claude to Codex, and whether the
 	*agent* on PATH is agent-sync at all (Cursor's CLI installer also
 	creates an *agent* command, which a hook or cron line would run
 	instead); another build of agent-sync there is only noted.
@@ -142,7 +144,10 @@ installed agent's global instructions slot.
 	~/.claude/skills, override with AGENT_SYNC_SKILLS_SOURCE) into every
 	agent's user-scope skills directory, per the gh-skill agent registry
 	mapping. Target-only skills remain. Unmanaged same-name collisions are
-	left untouched and make the command exit nonzero.
+	left untouched and make the command exit nonzero. A skill with text an
+	import tool rewrote from Claude to Codex (Codex Code, Codex -p,
+	Codex.ai) is refused: each damaged file is listed on stderr, clean
+	skills still sync, and the command exits nonzero.
 
 *hooks* [TOOL]
 	Print verified automation snippets that keep memory fresh: Claude Code
